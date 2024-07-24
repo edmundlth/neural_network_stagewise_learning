@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+jax = "*"
+numpy = "*"
+pandas = "*"
+scipy = "*"
+dm-haiku = "*"
+optax = "*"
+matplotlib = "*"
+seaborn = "*"
+tqdm = "*"
+jupyter = "*"
+equinox = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.9"
