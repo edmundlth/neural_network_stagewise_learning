@@ -15,6 +15,9 @@ seaborn = "*"
 tqdm = "*"
 jupyter = "*"
 equinox = "*"
+scikit-learn = "*"
+sacred = "*"
+numpyro = "*"
 
 [dev-packages]
 
