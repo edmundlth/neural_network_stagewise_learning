@@ -187,6 +187,7 @@ def run_sgld_known_potential(
 
     loss_trace = []
     distances = []
+    samples = []
     t = 0
     while t < sgld_config.num_steps:
         if compute_distance: 
@@ -203,9 +204,10 @@ def run_sgld_known_potential(
             return loss_trace, distances
         
         param, opt_state = _step(param, opt_state)
+        samples.append(param)
         t += 1
         if t >= sgld_config.num_steps:
             break
-    return loss_trace, distances
+    return loss_trace, distances, samples
 
 
