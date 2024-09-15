@@ -38,6 +38,16 @@ class DeepLinearNetwork(hk.Module):
         return x
 
 
+def get_dln_total_product_matrix(param):
+    keys = []
+    for key in param.keys():
+        if not key.startswith("deep_linear_network/linear"):
+            raise ValueError(f"DLN param tree key {key} does not start with 'deep_linear_network/linear'")
+        keys.append(key)
+    keys = sorted(keys)
+    return jnp.linalg.multi_dot([param[key]['w'] for key in keys])
+    
+
 def dln_forward_fn(x, layer_widths, sigma=None):
     # Function to initialize and apply the DLN model
     net = DeepLinearNetwork(layer_widths, sigma=sigma)

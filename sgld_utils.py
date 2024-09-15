@@ -39,7 +39,7 @@ def mala_acceptance_probability(current_point, proposed_point, loss_and_grad_fn,
     acceptance_log_prob = log_q_proposed_to_current - log_q_current_to_proposed + current_loss - proposed_loss
     return jnp.minimum(1.0, jnp.exp(acceptance_log_prob))
 
-def run_sgld(rngkey, loss_fn, sgld_config, param_init, x_train, y_train, itemp=None, trace_batch_loss=True, compute_distance=False, compute_mala_acceptance=True, verbose=False, logging_period=200):
+def run_sgld(rngkey, loss_fn, sgld_config, param_init, x_train, y_train, itemp=None, trace_batch_loss=True, compute_distance=False, compute_mala_acceptance=True, verbose=False, output_samples=False, logging_period=200):
     num_training_data = len(x_train)
     if itemp is None:
         itemp = 1 / jnp.log(num_training_data)
@@ -61,6 +61,7 @@ def run_sgld(rngkey, loss_fn, sgld_config, param_init, x_train, y_train, itemp=N
     accept_probs = []
     opt_state = sgldoptim.init(param_init)
     param = param_init
+    samples = [param]
     t = 0
     while t < sgld_config.num_steps:
         for x_batch, y_batch in create_minibatches(x_train, y_train, batch_size=sgld_config.batch_size):
@@ -102,9 +103,12 @@ def run_sgld(rngkey, loss_fn, sgld_config, param_init, x_train, y_train, itemp=N
             _, grads = sgld_grad_fn(param, x_batch, y_batch)
             updates, opt_state = sgldoptim.update(grads, opt_state)
             param = optax.apply_updates(param, updates)
+            samples.append(param)
             t += 1
             if t >= sgld_config.num_steps:
                 break
+    if output_samples:
+        return loss_trace, distances, accept_probs, samples
     return loss_trace, distances, accept_probs
 
 
