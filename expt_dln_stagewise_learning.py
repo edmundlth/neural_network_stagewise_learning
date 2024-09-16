@@ -1,0 +1,681 @@
+import jax
+import jax.numpy as jnp
+import jax.tree_util as jtree
+
+import numpy as np
+import optax
+
+from dln import (
+    create_dln_model, 
+    create_minibatches, 
+    true_dln_learning_coefficient, 
+    mse_loss, 
+    get_dln_total_product_matrix
+)
+
+from sgld_utils import (
+    SGLDConfig, 
+    run_sgld, 
+    run_sgld_known_potential
+)
+from utils import to_json_friendly_tree, running_mean
+import os
+import json
+import functools
+
+from sacred import Experiment
+# Create a new experiment
+ex = Experiment('dln_stagewise_learning')
+
+
+
+
+
+def init_teacher_matrix(input_dim, output_dim, config=("diagonal", 50, 10)):
+    teacher_matrix_type = config[0]
+    num_modes = min(input_dim, output_dim)
+    if teacher_matrix_type == "random":
+        teacher_matrix = np.random.randn(output_dim, input_dim)
+    elif teacher_matrix_type == "diagonal":
+        max_val, min_val = config[1], config[2]
+        teacher_matrix = np.diag(np.linspace(max_val, min_val, num_modes))
+    elif teacher_matrix_type == "diag_power_law":
+        power, max_val = config[1], config[2]
+        spectra = [max_val * (i + 1) ** (-power) for i in range(num_modes)]
+        teacher_matrix = np.diag(spectra)
+    else:
+        raise ValueError(f"Unknown teacher matrix type: {teacher_matrix_type}")
+    return teacher_matrix[:output_dim, :input_dim]
+
+
+def estimate_cross_correlation_matrix(X, Y):
+    assert X.shape[0] == Y.shape[0], "X and Y must have the same number of samples"
+    n = X.shape[0]
+    # Compute the non-centered cross covariance matrix
+    C_XY = jnp.dot(X.T, Y) / n
+    return C_XY
+
+
+
+def generate_correlation_matrix(key, n):
+    """
+    Generate a random positive definite symmetric square matrix.
+    
+    :param key: JAX random key
+    :param n: The size of the matrix (n x n)
+    :return: A random positive definite symmetric square matrix
+    """
+    key, subkey = jax.random.split(key)
+    A = jax.random.uniform(subkey, (n, n))
+    B = jnp.dot(A, A.T)
+    C = B / jnp.max(jnp.abs(B))  # Normalize to ensure diagonal elements are 1
+    return (C + C.T) / 2  # Ensure perfect symmetry
+
+def generate_correlated_data(key, n_samples, correlation_matrix):
+    """
+    Generate data with a specified correlation structure using JAX multivariate normal.
+    
+    :param key: JAX random key
+    :param n_samples: Number of samples to generate
+    :param correlation_matrix: The desired correlation matrix
+    :return: Generated data with the specified correlation structure
+    """
+    n_features = correlation_matrix.shape[0]
+    mean = jnp.zeros(n_features)
+    return jax.random.multivariate_normal(key, mean, correlation_matrix, (n_samples,))
+
+
+def make_potential_fn(
+        teacher_matrix, 
+        feature_corr, 
+        feature_output_cross_correlation, 
+        layer_widths
+    ):
+    eigvals, eigvecs = jnp.linalg.eigh(feature_corr)
+    ChangeOfBasis = eigvecs @ jnp.diag(eigvals ** (-1/2)) @ eigvecs.T
+    modified_feature_output_cross_correlation = feature_output_cross_correlation @ ChangeOfBasis 
+    U, S, V = jnp.linalg.svd(modified_feature_output_cross_correlation)
+    V = V.T
+    Vhat = jnp.linalg.inv(ChangeOfBasis) @ V
+    def get_matrices():
+        return U, S, V, Vhat, ChangeOfBasis
+
+    @jax.jit
+    def potential_matrix_fn(param):
+        param = jax.tree.map(lambda x: jnp.array(x), param, is_leaf=is_leaf)
+        total_matrix = get_dln_total_product_matrix(param)
+        potential_matrix = U.T @ (total_matrix.T - teacher_matrix) @ Vhat
+        return potential_matrix
+    
+    @jax.jit
+    def potential_fn(param):
+        potential_matrix = potential_matrix_fn(param)
+        return jnp.sum(potential_matrix ** 2)
+    return potential_matrix_fn, potential_fn, get_matrices
+
+
+def is_leaf(x):
+    return isinstance(x, (jnp.ndarray, list, np.ndarray))
+
+    
+
+def gradient_flow(
+        potential_fn, 
+        initial_params, 
+        num_steps, 
+        learning_rate=1e-3, 
+        logging_period=100, 
+        early_stopping_epsilon=None,
+        min_num_steps=None, 
+        eval_fns = None,
+    ):
+    """
+    Perform gradient flow on the given potential function.
+    
+    :param potential_fn: The potential function to optimize (should take params as input and return a scalar)
+    :param initial_params: Initial parameters (can be a pytree)
+    :param num_steps: Number of optimization steps
+    :param learning_rate: Learning rate for the gradient descent (default: 1e-3)
+    :return: Tuple of (optimized parameters, loss history)
+    """
+    if eval_fns is None:
+        eval_fns = [potential_fn]
+    
+    # Initialize the optimizer and the gradient function
+    optimizer = optax.sgd(learning_rate)
+    opt_state = optimizer.init(initial_params)
+    grad_fn = jax.grad(potential_fn)
+    
+    # Define a single step of the optimization
+    @jax.jit
+    def step(params, opt_state):
+        loss = potential_fn(params)
+        grads = grad_fn(params)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, loss
+
+    # Initialize parameters and loss history
+    params = initial_params
+    records = []
+
+    # Run the optimization loop
+    for t in range(num_steps):
+        params, opt_state, loss = step(params, opt_state)
+        if t % logging_period == 0:
+            total_matrix = get_dln_total_product_matrix(params)
+            rec = {
+                "t": t,
+                "total_matrix": total_matrix,
+                "loss": float(loss),
+                "evals": [eval_fn(params) for eval_fn in eval_fns]
+            }
+            records.append(to_json_friendly_tree(rec))
+            
+            if not jnp.isfinite(loss):
+                print("Loss is not finite. Stopping the optimization.")
+                break
+
+            if early_stopping_epsilon is not None and loss < early_stopping_epsilon:
+                if min_num_steps is None or t >= min_num_steps:
+                    print(f"LOSS BELOW EARLY STOPPING EPSILON. STOPPING EARLY. t={t}")
+                    break
+                
+    if t % logging_period != 0: # Log the final step
+        total_matrix = get_dln_total_product_matrix(params)
+        rec = {
+            "t": t,
+            "total_matrix": total_matrix,
+            "loss": float(loss), 
+            "evals": [eval_fn(params) for eval_fn in eval_fns]
+        }
+        records.append(to_json_friendly_tree(rec))
+    return records, params
+
+
+
+
+
+@ex.config
+def cfg():
+    expt_name = f"dev"
+    use_behavioural = True
+    do_llc_estimation = False
+    sgld_config = {
+        'epsilon': 5e-8,
+        'gamma': 1.0,
+        'num_steps': 500,
+        "num_chains": 1, 
+        "batch_size": 512
+    }
+    loss_trace_minibatch = True
+    burn_in_prop = 0.9
+    data_config = {
+        "num_training_data": 10000,
+        "feature_map": None, # None, ("polynomial", d)
+        "output_noise_std": 0.1, 
+        "input_range": 10, 
+        "teacher_matrix": ("diagonal", 50, 10), # ("diagonal", 50, 10), ("diag_power_law", 2, 50)
+        "idcorr": True,
+    }
+    model_config = {
+        "input_dim": 3,
+        "output_dim": 3,
+        "hidden_layer_widths": [3, 3],
+        "initialisation_exponent": None,
+        "init_origin": True,
+    }
+
+    itemp = None
+    training_config = {
+        "optim": "sgd", 
+        "learning_rate": 5e-5, 
+        "momentum": None, 
+        "batch_size": 128, 
+        "num_steps": 20000, 
+        "min_num_steps": 2000,
+        "early_stopping_loss_threshold": 0.001,
+    }
+    seed = 42
+    logging_period = 200
+    log_full_checkpoint_param = False
+    verbose = True
+
+
+
+
+@ex.automain
+def run_experiment(
+    _run, 
+    expt_name,
+    use_behavioural,
+    do_llc_estimation,
+    sgld_config,
+    loss_trace_minibatch,
+    burn_in_prop,
+    data_config,
+    model_config,
+    itemp,
+    training_config,
+    seed,
+    logging_period,
+    log_full_checkpoint_param,
+    verbose,
+):
+    # seeding
+    np.random.seed(seed)
+    rngkey = jax.random.PRNGKey(seed)
+
+
+    ####################
+    # Parse configs
+    ####################
+    num_training_data = data_config["num_training_data"]
+    output_noise_std = data_config["output_noise_std"]
+    use_idcorr = data_config["idcorr"]
+    input_dim = model_config["input_dim"]
+    output_dim = model_config["output_dim"]
+    initorigin = model_config["init_origin"]
+    hidden_layer_widths = model_config["hidden_layer_widths"]
+    initialisation_exponent = model_config["initialisation_exponent"]
+    if initialisation_exponent is None:
+        if initorigin:
+            initialisation_exponent = 3.0
+        else: 
+            initialisation_exponent = -2.0
+    if itemp is None:
+        itemp = 1 / np.log(num_training_data)
+
+
+    num_modes = min(input_dim, output_dim)
+    num_hidden_layers = len(hidden_layer_widths)
+    layer_widths = hidden_layer_widths + [output_dim]
+    average_width = np.mean(layer_widths)
+
+
+
+    ####################
+    # Initialisations
+    ####################
+    # Teacher matrix
+    teacher_matrix = init_teacher_matrix(input_dim, output_dim, config=data_config["teacher_matrix"])
+    
+    # Gerenate training data
+    rngkey, rngkey = jax.random.split(rngkey)
+    if use_idcorr:
+        input_correlation_matrix = jnp.eye(input_dim)
+    else:
+        input_correlation_matrix = generate_correlation_matrix(rngkey, input_dim)
+    x_train = jax.random.multivariate_normal(
+        rngkey, 
+        jnp.zeros(input_dim), 
+        input_correlation_matrix, 
+        shape=(num_training_data,), 
+        dtype=jnp.float32
+    )
+
+    rngkey, rngkey = jax.random.split(rngkey)
+    y_train = (
+        x_train @ teacher_matrix 
+        + jax.random.normal(rngkey, shape=(num_training_data, output_dim)) * output_noise_std
+    )
+
+    # Create DLN model
+    initialisation_sigma = np.sqrt(average_width ** (-initialisation_exponent))
+    model = create_dln_model(layer_widths, sigma=initialisation_sigma)
+    loss_fn = jax.jit(lambda param, inputs, targets: mse_loss(param, model, inputs, targets))
+
+    rngkey, subkey = jax.random.split(rngkey)
+    param_init = model.init(rngkey, jnp.zeros((1, input_dim)))
+
+    print("Model initialised with shapes:")
+    print(json.dumps(jtree.tree_map(lambda x: x.shape, param_init), indent=2))
+
+
+    ##############################################
+    # Useful matrices and functions
+    ##############################################
+    input_output_cross_correlation_matrix = teacher_matrix @ input_correlation_matrix
+    potential_matrix_fn, potential_fn, get_matrices = make_potential_fn(
+        teacher_matrix, 
+        input_correlation_matrix, 
+        input_output_cross_correlation_matrix, 
+        layer_widths=layer_widths
+    )
+    # est_input_output_correlation_matrix = (x_train.T @ y_train) / num_training_data
+    # est_input_correlation_matrix = (x_train.T @ x_train) / num_training_data
+    
+    U, S, V, Vhat, ChangeOfBasis = get_matrices()
+
+    POTENTIAL_TYPES = [ 
+        ("block", num_modes), 
+        ("diag", num_modes), 
+        ("col", num_modes), 
+        ("row", num_modes),
+        ("corner", num_modes),
+        ("offdiag_inclusive", num_modes + 1), 
+        ("offdiag_exclusive", num_modes + 1), 
+        ("row_col", num_modes),
+    ]
+    def get_stage_potential_fn(alpha, potential_type="block"):
+        potential_type = potential_type.lower()
+        if potential_type == "block":
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                return jnp.sum(H[:alpha + 1, :alpha + 1])
+        elif potential_type in ["diag", "diagonal"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                return jnp.sum(jnp.diag(H)[:alpha + 1])
+        elif potential_type in ["col", "column", "columns", "cols"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                return jnp.sum(H[:, :alpha + 1])
+        elif potential_type in ["row", "rows"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                return jnp.sum(H[:alpha + 1, :])
+        elif potential_type in ["corner"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                result = H[alpha, alpha] + H[alpha, :alpha].sum() + H[:alpha, alpha].sum()
+                return result
+        elif potential_type in ["offdiag_inclusive"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                result = H.sum() - jnp.diag(H)[alpha:].sum()
+                return result
+        elif potential_type in ["offdiag_exclusive"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                result = jnp.where(
+                    alpha > 0,
+                    jnp.diag(H)[:alpha].sum(), 
+                    H.sum() - jnp.diag(H).sum() # offdiagonal sum
+                )
+                return result
+        elif potential_type in ["row_col"]:
+            def stage_potential_fn(param):
+                H = potential_matrix_fn(param)**2
+                result = H.sum() - H[alpha + 1:, alpha + 1:].sum()
+                return result
+        else:
+            raise ValueError(f"Unknown potential type: {potential_type}")
+        return jax.jit(stage_potential_fn)
+    
+    @jax.jit
+    def theoretical_potential_gradient_component(param, a, b):
+        func = lambda param_other: (potential_matrix_fn(param_other)**2)[a, b]
+        g = jax.grad(func)(param)
+        return jnp.hstack([entry.flatten() for entry in jax.tree_util.tree_flatten(g)[0]])
+
+    @jax.jit
+    def theoretical_total_potential_grad_norm(param):
+        func = lambda param_other: jnp.sum((potential_matrix_fn(param_other)**2))
+        grad = jax.grad(func)(param)
+        norm_sq = jax.tree_util.tree_reduce(lambda x, y: x + jnp.sum(y**2), grad, 0)
+        return jnp.sqrt(norm_sq)
+
+
+    def theoretical_gradient_norm(param, entries):
+        grad = theoretical_potential_gradient_component(param, *entries[0])
+        for entry in entries[1:]:
+            grad = grad + theoretical_potential_gradient_component(param, *entry)
+        norm_sq = jax.tree_util.tree_reduce(lambda x, y: x + jnp.sum(y**2), grad, 0)
+        return jnp.sqrt(norm_sq)
+
+
+    ##############################################
+    # Record stuff before training
+    ##############################################
+    _run.info = {
+        "expt_properties": {
+            "teacher_matrix": teacher_matrix.tolist(),
+            "input_correlation_matrix": input_correlation_matrix.tolist(),
+            "input_output_cross_correlation_matrix": input_output_cross_correlation_matrix.tolist(),
+            "itemp": float(itemp),
+            "svd_matrices": {
+                "U": U.tolist(),
+                "S": S.tolist(),
+                "V": V.tolist(),
+                "Vhat": Vhat.tolist(),
+                "ChangeOfBasis": ChangeOfBasis.tolist()
+            },
+            "num_hidden_layers": num_hidden_layers,
+            "stage_potential_types": POTENTIAL_TYPES,
+            # "est_input_output_correlation_matrix": est_input_output_correlation_matrix.tolist(),
+            # "est_input_correlation_matrix": est_input_correlation_matrix.tolist(),
+        }
+    }
+
+    ##############################################
+    # SGD training
+    ##############################################
+    sgld_config = SGLDConfig(**sgld_config)
+    if training_config["optim"] == "sgd":
+        optimizer = optax.sgd(learning_rate=training_config["learning_rate"])
+    elif training_config["optim"] == "momentum":
+        optimizer = optax.sgd(learning_rate=training_config["learning_rate"], momentum=training_config["momentum"])
+    elif training_config["optim"] == "adam":
+        optimizer = optax.adam(learning_rate=training_config["learning_rate"], b1=0.9, b2=0.999, eps=1e-8)
+    else:
+        raise ValueError(f"Unknown optimiser: {training_config['optim']}")
+    
+    
+    grad_fn = jax.jit(jax.value_and_grad(loss_fn, argnums=0))
+    trained_param = param_init
+    opt_state = optimizer.init(trained_param)
+
+    # Create a list of eval functions
+    eval_list = [ # (name, function)
+        (
+            "full_potential", 
+            potential_fn
+        ),
+        (
+            "potential_matrix", 
+            potential_matrix_fn
+        ),
+        (
+            "total_potential_grad_norm", 
+            theoretical_total_potential_grad_norm
+        ),
+        (
+            "component_potential_grad_norm", 
+            lambda x: [
+                [
+                    float(theoretical_gradient_norm(x, [[a, b]]))
+                    for b in range(num_modes)
+                ] 
+                for a in range(num_modes)
+            ]
+        ), 
+    ]
+    for stage_potential_type, num_stages in POTENTIAL_TYPES:
+        name = f"stage_potential={stage_potential_type}"
+        # We create this list so that the functions are jitted only once
+        # We pass it as a default argument to avoid late binding closure issues
+        fn_list = [
+            get_stage_potential_fn(a, potential_type=stage_potential_type) 
+            for a in range(num_stages)
+        ]
+        func = lambda x, fn_list=fn_list:[
+            stage_potential_fn(x)
+            for stage_potential_fn in fn_list
+        ]
+        eval_list.append((name, func))
+
+    #TODO: record grad norms of other submatrices of the potential matrix.
+    print(f"Eval list: {[eval_name for eval_name, _ in eval_list]}")
+
+    # training loop
+    t = 0
+    _run.info["sgd_logs"] = {
+        "eval_list": [eval_name for eval_name, _ in eval_list],
+    }
+    _run.info["sgd_logs"]["checkpoint_logs"] = []
+    max_steps = training_config["num_steps"]
+    while t < max_steps:
+        for x_batch, y_batch in create_minibatches(x_train, y_train, batch_size=training_config["batch_size"]):
+            train_loss, grads = grad_fn(trained_param, x_batch, y_batch)
+            updates, opt_state = optimizer.update(grads, opt_state)
+            trained_param = optax.apply_updates(trained_param, updates)
+            
+            # logging checkpoint
+            if t % logging_period == 0:
+                # log total matrix
+                total_matrix = get_dln_total_product_matrix(trained_param)
+                corrected_total_matrix = U.T @ total_matrix.T @ Vhat
+                
+                # Estimate rank and using it to calculate true lambda and multiplicity
+                est_total_rank = jnp.sum(jnp.abs(jnp.linalg.eigvals(total_matrix)) > min(S) * 1e-2)
+                true_lambda, true_multiplicity = true_dln_learning_coefficient(
+                    est_total_rank, 
+                    layer_widths, 
+                    input_dim, 
+                )
+
+                rec = {
+                    "t": t + 1, 
+                    "train_loss": float(train_loss),
+                    "total_matrix": total_matrix,
+                    "corrected_total_matrix": corrected_total_matrix,
+                    "true_lambda": true_lambda, 
+                    "true_multiplicity": true_multiplicity, 
+                    "est_total_rank": est_total_rank,
+                    "evals": [eval_fn(trained_param) for _, eval_fn in eval_list]
+                }
+
+                if log_full_checkpoint_param:
+                    rec["trained_param"] = trained_param
+
+                if do_llc_estimation:
+                    rngkey, subkey = jax.random.split(rngkey)
+                    y_realisable = model.apply(trained_param, x_train) #+ jax.random.normal(subkey, shape=(num_training_data, output_dim)) * output_noise_std
+                    if use_behavioural:
+                        y = y_realisable
+                    else: 
+                        y = y_train
+
+                    rngkey, subkey = jax.random.split(rngkey)
+                    loss_trace, distances, acceptance_probs, param_samples = run_sgld(
+                        subkey, 
+                        loss_fn, 
+                        sgld_config, 
+                        trained_param, 
+                        x_train, 
+                        y,
+                        itemp=itemp, 
+                        trace_batch_loss=loss_trace_minibatch, 
+                        compute_distance=False, 
+                        verbose=False, 
+                        compute_mala_acceptance=False, 
+                        output_samples=True
+                    )
+                    trace_start = min(int(burn_in_prop * len(loss_trace)), len(loss_trace) - 1)
+                    init_loss = loss_fn(trained_param, x_train, y)
+                    lambdahat = float(np.mean(loss_trace[trace_start:]) - init_loss) * num_training_data * itemp
+
+                    stage_potential_llcs = []
+                    for i in range(input_dim):
+                        stage_potential_fn = get_stage_potential_fn(i, potential_type="block")
+                        init_loss = stage_potential_fn(trained_param)
+                        mean_loss = np.mean([stage_potential_fn(param) for param in param_samples[trace_start:]])
+                        stage_potential_llcs.append(float(mean_loss - init_loss) * num_training_data * itemp)
+
+                    rec.update(
+                        {
+                            "lambdahat": float(lambdahat),
+                            "loss_trace": loss_trace, 
+                            "init_loss": float(init_loss),
+                            "stage_potential_llcs": stage_potential_llcs,
+                        }
+                    )
+                
+                if verbose:
+                    if do_llc_estimation:
+                        stage_llc_str = ", ".join([f"{val:.2f}" for val in stage_potential_llcs])
+                    print(
+                        f"t: {t + 1:6d}, "
+                        + f"train_loss: {float(train_loss):.3f}, "
+                        + (f"llc: {lambdahat:.3f}, " if do_llc_estimation else "")
+                        + (f"true_llc: {true_lambda:.1f}, " if do_llc_estimation else "")
+                        + (f"Est total rank: {est_total_rank}")
+                        + (f"stage llcs: {stage_llc_str}, " if do_llc_estimation else "")
+                    )
+
+                _run.info["sgd_logs"]["checkpoint_logs"].append(to_json_friendly_tree(rec))
+            
+            t += 1
+            if t >= max_steps:
+                print(f"Reached max steps. Stopping. t={t}")
+                break
+
+            if train_loss < training_config["early_stopping_loss_threshold"] and t >= training_config["min_num_steps"]:
+                print(f"Loss below threshold. Stopping early. t={t}")
+                break
+
+    ##############################################
+    # Gradient Descent
+    ##############################################
+    gd_early_stopping_epsilon = 1e-6
+    gd_max_num_steps = training_config["num_steps"] * 2
+    gd_min_num_steps = min(1000, gd_max_num_steps // 2)
+    gd_learning_rate = training_config["learning_rate"] / 4
+    grad_flow_rec, _ = gradient_flow(
+        potential_fn, 
+        param_init, 
+        gd_max_num_steps, 
+        learning_rate=gd_learning_rate, 
+        logging_period=logging_period, 
+        early_stopping_epsilon=gd_early_stopping_epsilon, 
+        min_num_steps=gd_min_num_steps,
+        eval_fns=[fn for _, fn in eval_list]
+    )
+
+    _run.info["gd_logs"] = {
+        "checkpoint_logs": grad_flow_rec,
+        "eval_list": [eval_name for eval_name, _ in eval_list],
+        "max_num_steps": gd_max_num_steps,
+        "min_num_steps": gd_min_num_steps,
+        "early_stopping_epsilon": gd_early_stopping_epsilon,
+        "learning_rate": gd_learning_rate,
+    }
+
+    ##############################################
+    # Stage-wise Gradient Descent
+    ##############################################
+    _run.info["stagewise_gd_logs"] = {}
+    for stage_potential_type, num_stages in POTENTIAL_TYPES:
+        stage_potential_fn_list = [
+            get_stage_potential_fn(alpha, potential_type=stage_potential_type) 
+            for alpha in range(num_stages)
+        ]
+        eval_fns = [potential_fn] + stage_potential_fn_list
+        eval_names = ["total_potential"] + [
+            f"stage_potential_{stage_potential_type}_{alpha}" 
+            for alpha in range(num_stages)
+        ]
+        param = param_init
+        _run.info["stagewise_gd_logs"][stage_potential_type] = {
+            "eval_lists": list(eval_names),
+            "num_stages": len(stage_potential_fn_list),
+            "stage_logs": []
+        }
+        for alpha, stage_potential_fn in enumerate(stage_potential_fn_list):
+            grad_flow_rec, param = gradient_flow(
+                stage_potential_fn, 
+                param, 
+                gd_max_num_steps, 
+                learning_rate=gd_learning_rate / 2, 
+                logging_period=logging_period, 
+                early_stopping_epsilon=gd_early_stopping_epsilon, 
+                min_num_steps=gd_min_num_steps,
+                eval_fns=eval_fns
+            )
+            if verbose:
+                print(f"Stage {alpha + 1} for potential type `{stage_potential_type}` completed.")
+            _run.info["stagewise_gd_logs"][stage_potential_type]["stage_logs"].append(grad_flow_rec)
+    return 
+
+

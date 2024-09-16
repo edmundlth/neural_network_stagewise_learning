@@ -18,6 +18,7 @@ equinox = "*"
 scikit-learn = "*"
 sacred = "*"
 numpyro = "*"
+pymongo = "*"
 
 [dev-packages]
 
