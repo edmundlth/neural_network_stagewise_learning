@@ -8,19 +8,6 @@ import json
 
 def _create_cmd_string(key, value):
     return f'"{key}={value}"'
-    if isinstance(value, str):
-        return f"{key}='{value}'"
-    elif isinstance(value, (list, tuple)):
-        val_str = []
-        for v in value:
-            if isinstance(v, str):
-                val_str.append(f"'{v}'")
-            else:
-                val_str.append(str(v))
-        val_str = ",".join(val_str)
-        return f'{key}="{val_str}"'
-    else:
-        return f"{key}={value}"
     
 def generate_sacred_commands(fixed_configs, varying_configs, script_name, observer=None):
     if observer is None:
@@ -97,7 +84,7 @@ FIXED_CONFIGS = {
     "do_llc_estimation": False,
     "loss_trace_minibatch": True,
     "burn_in_prop": 0.9,
-    "logging_period": 100,
+    "logging_period": 200,
     "log_full_checkpoint_param": False,
     "verbose": True, 
     "data_config.num_training_data": NUMTRAININGDATA,
@@ -122,8 +109,7 @@ VARYING_CONFIGS = {
     ],
     "data_config.idcorr": [True, False],
     "model_config.hidden_layer_widths": width_options,
-    "model_config.initialisation_exponent": [-3.0, -1.0, 1.0, 3.0], 
-    
+    "model_config.initialisation_exponent": [-2.0, -1.0, 1.0, 2.0],    
 }
 
 # Generate commands

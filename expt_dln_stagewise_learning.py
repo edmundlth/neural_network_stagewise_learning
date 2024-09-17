@@ -546,6 +546,7 @@ def run_experiment(
     max_steps = training_config["num_steps"]
     early_stopping_reached = False
     delay_early_stop = 0
+    nan_detected = False
     while t < max_steps:
         for x_batch, y_batch in create_minibatches(x_train, y_train, batch_size=training_config["batch_size"]):
             train_loss, grads = grad_fn(trained_param, x_batch, y_batch)
@@ -579,7 +580,7 @@ def run_experiment(
 
                 if log_full_checkpoint_param:
                     rec["trained_param"] = trained_param
-
+                
                 if do_llc_estimation:
                     rngkey, subkey = jax.random.split(rngkey)
                     y_realisable = model.apply(trained_param, x_train) #+ jax.random.normal(subkey, shape=(num_training_data, output_dim)) * output_noise_std
@@ -650,11 +651,19 @@ def run_experiment(
         if early_stopping_reached and delay_early_stop > logging_period * 30:
             # Stop early if the loss is below the threshold for 30 logging periods
             break
-        _run.info["sgd_logs"]["early_stopping_reached"] = early_stopping_reached
+
+        if jnp.isnan(train_loss):
+            print("Loss is NaN. Stopping the optimization.")
+            nan_detected = True
+            break
+    _run.info["expt_properties"]["early_stopping_reached"] = early_stopping_reached
+    _run.info["expt_properties"]["nan_detected"] = nan_detected
+
 
     ##############################################
     # Gradient Descent
     ##############################################
+    print("Starting gradient descent")
     gd_early_stopping_epsilon = 1e-6
     gd_max_num_steps = training_config["num_steps"] * 2
     gd_min_num_steps = min(1000, gd_max_num_steps // 2)
@@ -678,10 +687,12 @@ def run_experiment(
         "early_stopping_epsilon": gd_early_stopping_epsilon,
         "learning_rate": gd_learning_rate,
     }
+    print("Gradient descent completed.")
 
     ##############################################
     # Stage-wise Gradient Descent
     ##############################################
+    print("Starting stagewise gradient descent")
     _run.info["stagewise_gd_logs"] = {}
     for stage_potential_type, num_stages in POTENTIAL_TYPES:
         stage_potential_fn_list = [
