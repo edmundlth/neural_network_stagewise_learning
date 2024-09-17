@@ -33,6 +33,7 @@ ex = Experiment('dln_stagewise_learning')
 
 def init_teacher_matrix(input_dim, output_dim, config=("diagonal", 50, 10)):
     teacher_matrix_type = config[0]
+    print(f"Initialising teacher matrix with config: {config}")
     num_modes = min(input_dim, output_dim)
     if teacher_matrix_type == "random":
         teacher_matrix = np.random.randn(output_dim, input_dim)
@@ -57,19 +58,43 @@ def estimate_cross_correlation_matrix(X, Y):
 
 
 
-def generate_correlation_matrix(key, n):
+
+def generate_random_covariance_matrix(key, n, max_variance, min_variance=1.0):
     """
-    Generate a random positive definite symmetric square matrix.
+    Generate a random covariance matrix with controlled variances using JAX.
     
-    :param key: JAX random key
-    :param n: The size of the matrix (n x n)
-    :return: A random positive definite symmetric square matrix
+    Parameters:
+    key (PRNGKey): JAX random number generator key
+    n (int): The dimension of the covariance matrix
+    max_variance (float): The maximum variance (must be greater than min_variance)
+    min_variance (float): The minimum variance (default is 1.0)
+    
+    Returns:
+    jax.numpy.ndarray: A random covariance matrix
     """
-    key, subkey = jax.random.split(key)
-    A = jax.random.uniform(subkey, (n, n))
-    B = jnp.dot(A, A.T)
-    C = B / jnp.max(jnp.abs(B))  # Normalize to ensure diagonal elements are 1
-    return (C + C.T) / 2  # Ensure perfect symmetry
+    # if max_variance <= min_variance:
+    #     raise ValueError("max_variance must be greater than min_variance")
+
+    # Split the random key
+    key_eigvals, key_q = jax.random.split(key)
+
+    # Generate random eigenvalues (variances)
+    log_eigvals = jax.random.uniform(key_eigvals, 
+                                 shape=(n,), 
+                                 minval=jnp.log(min_variance), 
+                                 maxval=jnp.log(max_variance))
+    eigvals = jnp.exp(log_eigvals)
+    
+    # Generate a random orthogonal matrix using QR decomposition
+    q_matrix, _ = jnp.linalg.qr(jax.random.normal(key_q, shape=(n, n)))
+    
+    # Construct the covariance matrix
+    C = q_matrix @ jnp.diag(eigvals) @ q_matrix.T
+    
+    # Ensure symmetry (can be slightly off due to numerical precision)
+    C = (C + C.T) / 2
+    
+    return C
 
 def generate_correlated_data(key, n_samples, correlation_matrix):
     """
@@ -89,7 +114,6 @@ def make_potential_fn(
         teacher_matrix, 
         feature_corr, 
         feature_output_cross_correlation, 
-        layer_widths
     ):
     eigvals, eigvecs = jnp.linalg.eigh(feature_corr)
     ChangeOfBasis = eigvecs @ jnp.diag(eigvals ** (-1/2)) @ eigvecs.T
@@ -214,7 +238,7 @@ def cfg():
         "num_training_data": 10000,
         "feature_map": None, # None, ("polynomial", d)
         "output_noise_std": 0.1, 
-        "input_range": 10, 
+        "input_variance_range": (1.0, 10.0), 
         "teacher_matrix": ("diagonal", 50, 10), # ("diagonal", 50, 10), ("diag_power_law", 2, 50)
         "idcorr": True,
     }
@@ -271,6 +295,7 @@ def run_experiment(
     # Parse configs
     ####################
     num_training_data = data_config["num_training_data"]
+    input_variance_range = data_config["input_variance_range"]
     output_noise_std = data_config["output_noise_std"]
     use_idcorr = data_config["idcorr"]
     input_dim = model_config["input_dim"]
@@ -305,7 +330,12 @@ def run_experiment(
     if use_idcorr:
         input_correlation_matrix = jnp.eye(input_dim)
     else:
-        input_correlation_matrix = generate_correlation_matrix(rngkey, input_dim)
+        input_correlation_matrix = generate_random_covariance_matrix(
+            rngkey, 
+            input_dim, 
+            max_variance=input_variance_range[1],
+            min_variance=input_variance_range[0]
+        )
     x_train = jax.random.multivariate_normal(
         rngkey, 
         jnp.zeros(input_dim), 
@@ -339,8 +369,7 @@ def run_experiment(
     potential_matrix_fn, potential_fn, get_matrices = make_potential_fn(
         teacher_matrix, 
         input_correlation_matrix, 
-        input_output_cross_correlation_matrix, 
-        layer_widths=layer_widths
+        input_output_cross_correlation_matrix
     )
     # est_input_output_correlation_matrix = (x_train.T @ y_train) / num_training_data
     # est_input_correlation_matrix = (x_train.T @ x_train) / num_training_data
@@ -515,6 +544,8 @@ def run_experiment(
     }
     _run.info["sgd_logs"]["checkpoint_logs"] = []
     max_steps = training_config["num_steps"]
+    early_stopping_reached = False
+    delay_early_stop = 0
     while t < max_steps:
         for x_batch, y_batch in create_minibatches(x_train, y_train, batch_size=training_config["batch_size"]):
             train_loss, grads = grad_fn(trained_param, x_batch, y_batch)
@@ -612,8 +643,14 @@ def run_experiment(
                 break
 
             if train_loss < training_config["early_stopping_loss_threshold"] and t >= training_config["min_num_steps"]:
-                print(f"Loss below threshold. Stopping early. t={t}")
-                break
+                if delay_early_stop == 0:
+                    print(f"Loss {float(train_loss)} below threshold. Stopping early. t={t}")
+                    early_stopping_reached = True
+                delay_early_stop += 1
+        if early_stopping_reached and delay_early_stop > logging_period * 30:
+            # Stop early if the loss is below the threshold for 30 logging periods
+            break
+        _run.info["sgd_logs"]["early_stopping_reached"] = early_stopping_reached
 
     ##############################################
     # Gradient Descent
@@ -667,7 +704,7 @@ def run_experiment(
                 stage_potential_fn, 
                 param, 
                 gd_max_num_steps, 
-                learning_rate=gd_learning_rate / 2, 
+                learning_rate=gd_learning_rate, 
                 logging_period=logging_period, 
                 early_stopping_epsilon=gd_early_stopping_epsilon, 
                 min_num_steps=gd_min_num_steps,
@@ -675,7 +712,9 @@ def run_experiment(
             )
             if verbose:
                 print(f"Stage {alpha + 1} for potential type `{stage_potential_type}` completed.")
-            _run.info["stagewise_gd_logs"][stage_potential_type]["stage_logs"].append(grad_flow_rec)
+            _run.info["stagewise_gd_logs"][stage_potential_type]["stage_logs"].append(
+                to_json_friendly_tree(grad_flow_rec)
+            )
     return 
 
 

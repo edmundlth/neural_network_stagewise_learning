@@ -19,5 +19,19 @@ DATABASE_URL="localhost:27017:${DATABASE_NAME}"
 # python expt_dln_stagewise_learning.py -m ${DATABASE_URL} with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=2 model_config.input_dim=5 model_config.output_dim=5 model_config.hidden_layer_widths=5,5 logging_period=300 seed=0 training_config.num_steps=100000
 
 # away from origin
-python expt_dln_stagewise_learning.py -m ${DATABASE_URL} with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=-2 model_config.input_dim=5 model_config.output_dim=5 model_config.hidden_layer_widths=5,5 logging_period=300 seed=0 training_config.num_steps=30000
+# python expt_dln_stagewise_learning.py -m ${DATABASE_URL} with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=-2 model_config.input_dim=5 model_config.output_dim=5 model_config.hidden_layer_widths=5,5 logging_period=300 seed=0 training_config.num_steps=30000
+
+
+
+
+###########################################
+# Generate commands for running on cluster
+###########################################
+# DATETIME=$(date +"%Y%m%d%H%M")
+# # SUFFIX="${DATETIME}"
+# SUFFIX="test_${DATETIME}"
+# SUFFIX="test"
+# OUTFILEPATH="./outputs/dln_stagewise_learning/commands_${SUFFIX}.txt"
+# echo "Outputting commands to ${OUTFILEPATH}"
+# python generate_dln_stagewise_learning_commands.py ${OUTFILEPATH}
 
