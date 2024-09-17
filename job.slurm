@@ -22,7 +22,7 @@
 
 #SBATCH --output=./outputs/slurm_logs/slurm_%A_%a.out
 #SBATCH --error=./outputs/slurm_logs/slurm_%A_%a.err
-#SBATCH --array=1-100
+#SBATCH --array=2-10
 
 # check that the script is launched with sbatch
 if [ "x$SLURM_JOB_ID" == "x" ]; then
@@ -40,7 +40,7 @@ module load Python/3.10.4
 source /home/elau1/venvgpu3.10/bin/activate
 
 ########## Script ###########
-CMD=$(sed -n "${SLURM_ARRAY_TASK_ID}p" commands.txt)
+CMD=$(sed -n "${SLURM_ARRAY_TASK_ID}p" generated_commands_dir/commands_test.txt)
 echo "Executing command: $CMD"
 eval $CMD
 
