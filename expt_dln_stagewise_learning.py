@@ -126,7 +126,7 @@ def make_potential_fn(
 
     @jax.jit
     def potential_matrix_fn(param):
-        param = jax.tree.map(lambda x: jnp.array(x), param, is_leaf=is_leaf)
+        param = jtree.tree_map(lambda x: jnp.array(x), param, is_leaf=is_leaf)
         total_matrix = get_dln_total_product_matrix(param)
         potential_matrix = U.T @ (total_matrix.T - teacher_matrix) @ Vhat
         return potential_matrix
@@ -436,13 +436,13 @@ def run_experiment(
     def theoretical_potential_gradient_component(param, a, b):
         func = lambda param_other: (potential_matrix_fn(param_other)**2)[a, b]
         g = jax.grad(func)(param)
-        return jnp.hstack([entry.flatten() for entry in jax.tree_util.tree_flatten(g)[0]])
+        return jnp.hstack([entry.flatten() for entry in jtree.tree_flatten(g)[0]])
 
     @jax.jit
     def theoretical_total_potential_grad_norm(param):
         func = lambda param_other: jnp.sum((potential_matrix_fn(param_other)**2))
         grad = jax.grad(func)(param)
-        norm_sq = jax.tree_util.tree_reduce(lambda x, y: x + jnp.sum(y**2), grad, 0)
+        norm_sq = jtree.tree_reduce(lambda x, y: x + jnp.sum(y**2), grad, 0)
         return jnp.sqrt(norm_sq)
 
 
@@ -450,7 +450,7 @@ def run_experiment(
         grad = theoretical_potential_gradient_component(param, *entries[0])
         for entry in entries[1:]:
             grad = grad + theoretical_potential_gradient_component(param, *entry)
-        norm_sq = jax.tree_util.tree_reduce(lambda x, y: x + jnp.sum(y**2), grad, 0)
+        norm_sq = jtree.tree_reduce(lambda x, y: x + jnp.sum(y**2), grad, 0)
         return jnp.sqrt(norm_sq)
 
 
