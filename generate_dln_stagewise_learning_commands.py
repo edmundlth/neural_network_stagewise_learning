@@ -46,7 +46,7 @@ NUMTRAININGDATA = 100000
 BATCH_SIZE = 512
 LEARNING_RATE = 1e-5
 NUMSTEPS = 500000
-OPTIM = "sgd"
+OPTIM = "momentum" # "sgd", "adam", "momentum"
 NUM_SEEDS = 1
 
 
@@ -86,12 +86,12 @@ FIXED_CONFIGS = {
     "do_llc_estimation": False,
     "loss_trace_minibatch": True,
     "burn_in_prop": 0.9,
-    "logging_period": 200,
+    "logging_period": 250,
     "log_full_checkpoint_param": False,
     "verbose": True, 
     "data_config.num_training_data": NUMTRAININGDATA,
     "data_config.output_noise_std": 0.1,
-    "data_config.input_variance_range": [1.0, 3.0],
+    "data_config.input_variance_range": [0.5, 2.5],
     "model_config.input_dim": IN_DIM,
     "model_config.output_dim": OUT_DIM,
     "training_config.learning_rate": LEARNING_RATE,
@@ -107,7 +107,8 @@ VARYING_CONFIGS = {
     "seed": list(range(NUM_SEEDS)),
     "data_config.teacher_matrix": [
         ("diagonal", 50, 10), 
-        ("diag_power_law", 1.0, 50)
+        ("diag_power_law", 1.0, 50),
+        ("diag_power_law", 2.0, 100)
     ],
     "data_config.idcorr": [True, False],
     "model_config.hidden_layer_widths": width_options,

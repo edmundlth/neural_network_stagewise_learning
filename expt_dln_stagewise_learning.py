@@ -254,7 +254,7 @@ def cfg():
     training_config = {
         "optim": "sgd", 
         "learning_rate": 5e-5, 
-        "momentum": None, 
+        "momentum": 0.9,
         "batch_size": 128, 
         "num_steps": 20000, 
         "min_num_steps": 2000,
