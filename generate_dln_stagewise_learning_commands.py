@@ -4,6 +4,7 @@ import sys
 from utils import to_json_friendly_tree
 import itertools
 import json
+import os
 
 
 def _create_cmd_string(key, value):
@@ -32,11 +33,11 @@ current_time = datetime.datetime.now()
 datetime_str = current_time.strftime("%Y%m%d%H%M")
 
 DLN_SIZE = "small"
-IN_DIM = 5
-OUT_DIM = 5
+IN_DIM = 8
+OUT_DIM = 8
 NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 5
 WIDTH_TYPE = "vary" # "vary", "constant"
-WIDTH_MIN, WIDTH_MAX = 5, 10
+WIDTH_MIN, WIDTH_MAX = 8, 15
 WIDTH = min(IN_DIM, OUT_DIM)
 assert min(IN_DIM, OUT_DIM) <= WIDTH_MIN <= WIDTH_MAX
 assert min(IN_DIM, OUT_DIM) <= WIDTH
@@ -71,10 +72,11 @@ EXPT_NAME = (
     f"{datetime_str}"
 )
 
-DB_NAME = "test_dln_stagewise_learning"
-# DB_NAME = "dln_stagewise_learning"
+# DB_NAME = "test_dln_stagewise_learning"
 # SACRED_OBSERVER = f"-m localhost:27017:{DB_NAME}"
-SACRED_OBSERVER = f"-F ./outputs/dln_stagewise_learning/{EXPT_NAME}/"
+is_prod = True
+dev_str = "prod/" if is_prod else "dev/"
+SACRED_OBSERVER = f"-F ./outputs/dln_stagewise_learning/{dev_str}{EXPT_NAME}/"
 
 
 # Base parameters (constant across all runs)
@@ -89,7 +91,7 @@ FIXED_CONFIGS = {
     "verbose": True, 
     "data_config.num_training_data": NUMTRAININGDATA,
     "data_config.output_noise_std": 0.1,
-    "data_config.input_variance_range": [1.0, 10],
+    "data_config.input_variance_range": [1.0, 3.0],
     "model_config.input_dim": IN_DIM,
     "model_config.output_dim": OUT_DIM,
     "training_config.learning_rate": LEARNING_RATE,
@@ -109,7 +111,7 @@ VARYING_CONFIGS = {
     ],
     "data_config.idcorr": [True, False],
     "model_config.hidden_layer_widths": width_options,
-    "model_config.initialisation_exponent": [-2.0, -1.0, 1.0, 2.0],    
+    "model_config.initialisation_exponent": [-0.3, -0.1, 1.0, 2.0],
 }
 
 # Generate commands
@@ -128,13 +130,32 @@ if len(sys.argv) > 1:
 else: 
     filepath = f"./outputs/dln_stagewise_learning/commands_{datetime_str}.txt"
 
-print(f"Saving commands to {filepath}")
-with open(filepath, "w") as outfile:
-    header_str = to_json_friendly_tree({
-        "expt_name": EXPT_NAME,
-        "fixed_configs": FIXED_CONFIGS,
-        "varying_configs": VARYING_CONFIGS
-    })
-    header_str = json.dumps(header_str, indent=None)
-    outfile.write(header_str)
-    outfile.write('\n'.join(COMMANDS))
+print(f"Chosen filepath: {filepath}")
+write_to_file = False
+if os.path.exists(filepath):
+    filelist = '\n'.join(os.listdir(os.path.dirname(filepath)))
+    print(
+        f"File already exists. Files in directory:\n{filelist}"
+    )
+    response = input("Are you sure you want to overwrite it? (y/n): ")
+    if response.lower() != "y":
+        print("Exiting without overwriting.")
+        write_to_file = False
+    else:
+        print("Overwriting file.")
+        write_to_file = True
+else:
+    write_to_file = True
+
+if write_to_file:
+    print(f"Writing to file.")
+    with open(filepath, "w") as outfile:
+        header_str = to_json_friendly_tree({
+            "expt_name": EXPT_NAME,
+            "fixed_configs": FIXED_CONFIGS,
+            "varying_configs": VARYING_CONFIGS
+        })
+        header_str = json.dumps(header_str, indent=None)
+        outfile.write(header_str)
+        outfile.write('\n'.join(COMMANDS))
+    print("Done.")

@@ -260,6 +260,12 @@ def cfg():
         "min_num_steps": 2000,
         "early_stopping_loss_threshold": 0.001,
     }
+    gd_training_config = {
+        "learning_rate": training_config["learning_rate"] / 4,
+        "early_stopping_epsilon": 5e-5,
+        "min_num_steps": training_config["min_num_steps"],
+        "num_steps": training_config["num_steps"],
+    }
     seed = 42
     logging_period = 200
     log_full_checkpoint_param = False
@@ -281,6 +287,7 @@ def run_experiment(
     model_config,
     itemp,
     training_config,
+    gd_training_config,
     seed,
     logging_period,
     log_full_checkpoint_param,
@@ -664,10 +671,10 @@ def run_experiment(
     # Gradient Descent
     ##############################################
     print("Starting gradient descent")
-    gd_early_stopping_epsilon = 1e-6
-    gd_max_num_steps = training_config["num_steps"] * 2
-    gd_min_num_steps = min(1000, gd_max_num_steps // 2)
-    gd_learning_rate = training_config["learning_rate"] / 4
+    gd_early_stopping_epsilon = gd_training_config["early_stopping_epsilon"]
+    gd_max_num_steps = gd_training_config["num_steps"]
+    gd_min_num_steps = min(gd_training_config["min_num_steps"], gd_max_num_steps)
+    gd_learning_rate = gd_training_config["learning_rate"]
     grad_flow_rec, _ = gradient_flow(
         potential_fn, 
         param_init, 

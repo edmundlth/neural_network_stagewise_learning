@@ -23,15 +23,21 @@ DATABASE_URL="localhost:27017:${DATABASE_NAME}"
 
 
 
-
 ###########################################
 # Generate commands for running on cluster
 ###########################################
 # DATETIME=$(date +"%Y%m%d%H%M")
 # # SUFFIX="${DATETIME}"
 # SUFFIX="test_${DATETIME}"
-# SUFFIX="test"
-# OUTFILEPATH="./outputs/dln_stagewise_learning/commands_${SUFFIX}.txt"
-# echo "Outputting commands to ${OUTFILEPATH}"
-# python generate_dln_stagewise_learning_commands.py ${OUTFILEPATH}
+# Read suffix from next argument 
+SUFFIX=$1
+if [ -z "$SUFFIX" ]
+then
+    echo "No suffix provided. Exiting."
+    exit 1
+fi
+
+OUTFILEPATH="./generated_commands_dir/commands_${SUFFIX}.txt"
+echo "Outputting commands to ${OUTFILEPATH}"
+python generate_dln_stagewise_learning_commands.py ${OUTFILEPATH}
 
