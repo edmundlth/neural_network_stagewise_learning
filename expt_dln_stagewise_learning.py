@@ -44,6 +44,22 @@ def init_teacher_matrix(input_dim, output_dim, config=("diagonal", 50, 10)):
         power, max_val = config[1], config[2]
         spectra = [max_val * (i + 1) ** (-power) for i in range(num_modes)]
         teacher_matrix = np.diag(spectra)
+    elif teacher_matrix_type == "band":
+        bandwidth, bandgap = config[1], config[2]
+        if len(config) > 3:
+            num_group = config[3]
+        spectra = np.zeros(num_modes)
+        current_band_min = 0.01
+        num_assigned_modes = 0
+        while num_assigned_modes < num_modes:
+            num_modes_in_band = np.random.randint(1, num_modes // min(num_group, num_modes))
+            num_modes_in_band = min(num_modes_in_band, num_modes - num_assigned_modes)
+            current_band_max = current_band_min + bandwidth
+            singular_values = np.random.uniform(current_band_min, current_band_max, num_modes_in_band)
+            spectra[num_assigned_modes:num_assigned_modes + num_modes_in_band] = singular_values
+            num_assigned_modes += num_modes_in_band
+            current_band_min = current_band_max + bandgap
+        teacher_matrix = np.diag(spectra)        
     else:
         raise ValueError(f"Unknown teacher matrix type: {teacher_matrix_type}")
     return teacher_matrix[:output_dim, :input_dim]
@@ -239,7 +255,10 @@ def cfg():
         "feature_map": None, # None, ("polynomial", d)
         "output_noise_std": 0.1, 
         "input_variance_range": (1.0, 10.0), 
-        "teacher_matrix": ("diagonal", 50, 10), # ("diagonal", 50, 10), ("diag_power_law", 2, 50)
+        # ("diagonal", max, min), 
+        # ("diag_power_law", power, max), 
+        # ("band", bandwidth, bandgap, num_group)
+        "teacher_matrix": ("diagonal", 50, 10), 
         "idcorr": True,
     }
     model_config = {
@@ -262,13 +281,15 @@ def cfg():
     }
     gd_training_config = {
         "learning_rate": training_config["learning_rate"] / 4,
-        "early_stopping_epsilon": 5e-5,
+        "early_stopping_epsilon": 5e-4,
         "min_num_steps": training_config["min_num_steps"],
         "num_steps": training_config["num_steps"],
     }
     seed = 42
     logging_period = 200
     log_full_checkpoint_param = False
+    eval_mode = "full" # "full", "minimal"
+    do_plotting = False
     verbose = True
 
 
@@ -291,6 +312,8 @@ def run_experiment(
     seed,
     logging_period,
     log_full_checkpoint_param,
+    eval_mode,
+    do_plotting, 
     verbose,
 ):
     # seeding
@@ -392,6 +415,7 @@ def run_experiment(
         ("offdiag_inclusive", num_modes + 1), 
         ("offdiag_exclusive", num_modes + 1), 
         ("row_col", num_modes),
+        ("behavioural", num_modes),
     ]
     def get_stage_potential_fn(alpha, potential_type="block"):
         potential_type = potential_type.lower()
@@ -434,6 +458,14 @@ def run_experiment(
             def stage_potential_fn(param):
                 H = potential_matrix_fn(param)**2
                 result = H.sum() - H[alpha + 1:, alpha + 1:].sum()
+                return result
+        elif potential_type in ["behavioural"]:
+            def stage_potential_fn(param):
+                modified_S = jnp.diag(
+                    [s if i < alpha else 0 for i, s in enumerate(S)]
+                )
+                H = (potential_matrix_fn(param) + modified_S) ** 2
+                result = jnp.sum(H)
                 return result
         else:
             raise ValueError(f"Unknown potential type: {potential_type}")
@@ -509,23 +541,9 @@ def run_experiment(
             potential_fn
         ),
         (
-            "potential_matrix", 
-            potential_matrix_fn
-        ),
-        (
             "total_potential_grad_norm", 
             theoretical_total_potential_grad_norm
         ),
-        (
-            "component_potential_grad_norm", 
-            lambda x: [
-                [
-                    float(theoretical_gradient_norm(x, [[a, b]]))
-                    for b in range(num_modes)
-                ] 
-                for a in range(num_modes)
-            ]
-        ), 
     ]
     for stage_potential_type, num_stages in POTENTIAL_TYPES:
         name = f"stage_potential={stage_potential_type}"
@@ -540,6 +558,23 @@ def run_experiment(
             for stage_potential_fn in fn_list
         ]
         eval_list.append((name, func))
+    if eval_mode == "full":
+        eval_list += [
+            (
+                "potential_matrix", 
+                potential_matrix_fn
+            ),
+            (
+                "component_potential_grad_norm", 
+                lambda x: [
+                    [
+                        float(theoretical_gradient_norm(x, [[a, b]]))
+                        for b in range(num_modes)
+                    ] 
+                    for a in range(num_modes)
+                ]
+            ), 
+        ]
 
     #TODO: record grad norms of other submatrices of the potential matrix.
     print(f"Eval list: {[eval_name for eval_name, _ in eval_list]}")
@@ -577,13 +612,16 @@ def run_experiment(
                 rec = {
                     "t": t + 1, 
                     "train_loss": float(train_loss),
-                    "total_matrix": total_matrix,
-                    "corrected_total_matrix": corrected_total_matrix,
+                    "corrected_total_matrix_diagonals": jnp.diag(corrected_total_matrix),
                     "true_lambda": true_lambda, 
                     "true_multiplicity": true_multiplicity, 
                     "est_total_rank": est_total_rank,
                     "evals": [eval_fn(trained_param) for _, eval_fn in eval_list]
                 }
+                if eval_mode == "full":
+                    rec["total_matrix"] = total_matrix
+                    rec["corrected_total_matrix"] = corrected_total_matrix
+                    
 
                 if log_full_checkpoint_param:
                     rec["trained_param"] = trained_param
@@ -615,32 +653,23 @@ def run_experiment(
                     init_loss = loss_fn(trained_param, x_train, y)
                     lambdahat = float(np.mean(loss_trace[trace_start:]) - init_loss) * num_training_data * itemp
 
-                    stage_potential_llcs = []
-                    for i in range(input_dim):
-                        stage_potential_fn = get_stage_potential_fn(i, potential_type="block")
-                        init_loss = stage_potential_fn(trained_param)
-                        mean_loss = np.mean([stage_potential_fn(param) for param in param_samples[trace_start:]])
-                        stage_potential_llcs.append(float(mean_loss - init_loss) * num_training_data * itemp)
 
                     rec.update(
                         {
                             "lambdahat": float(lambdahat),
-                            "loss_trace": loss_trace, 
                             "init_loss": float(init_loss),
-                            "stage_potential_llcs": stage_potential_llcs,
                         }
                     )
+                    if eval_mode == "full":
+                        rec["loss_trace"] = loss_trace
                 
                 if verbose:
-                    if do_llc_estimation:
-                        stage_llc_str = ", ".join([f"{val:.2f}" for val in stage_potential_llcs])
                     print(
                         f"t: {t + 1:6d}, "
                         + f"train_loss: {float(train_loss):.3f}, "
                         + (f"llc: {lambdahat:.3f}, " if do_llc_estimation else "")
                         + (f"true_llc: {true_lambda:.1f}, " if do_llc_estimation else "")
                         + (f"Est total rank: {est_total_rank}")
-                        + (f"stage llcs: {stage_llc_str}, " if do_llc_estimation else "")
                     )
 
                 _run.info["sgd_logs"]["checkpoint_logs"].append(to_json_friendly_tree(rec))
@@ -733,6 +762,30 @@ def run_experiment(
             _run.info["stagewise_gd_logs"][stage_potential_type]["stage_logs"].append(
                 to_json_friendly_tree(grad_flow_rec)
             )
+    
+    # ##############################################
+    # # Plotting
+    # ##############################################
+    # if do_plotting:
+    #     import matplotlib.pyplot as plt
+    #     import plot_utils
+    #     def savefig_fn(fig, filename):
+    #         fig.savefig(filename)
+    #         _run.add_artifact(filename)
+    #         return 
+    #     df_sgd = plot_utils.parse_sgd_logs(_run.info["sgd_logs"])
+    #     plot_utils.generate_sgd_plots(
+    #         df_sgd, 
+    #         _run.config,
+    #         _run.info["expt_properties"],
+    #         savefig_fn
+    #     )
+    #     fig, ax = plt.subplots()
+    #     ax.plot(df_sgd["t"], df_sgd["train_loss"], label="SGD")
+    #     ax.set_xlabel("t")
+    #     ax.set_ylabel("Train Loss")
+    #     ax.legend()
+    #     savefig_fn(fig, "train_loss.png")
     return 
 
 

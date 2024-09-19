@@ -32,12 +32,12 @@ def generate_sacred_commands(fixed_configs, varying_configs, script_name, observ
 current_time = datetime.datetime.now()
 datetime_str = current_time.strftime("%Y%m%d%H%M")
 
-DLN_SIZE = "small"
-IN_DIM = 8
-OUT_DIM = 8
-NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 5
+DLN_SIZE = "medium"
+IN_DIM = 15
+OUT_DIM = 15
+NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 3
 WIDTH_TYPE = "vary" # "vary", "constant"
-WIDTH_MIN, WIDTH_MAX = 8, 15
+WIDTH_MIN, WIDTH_MAX = min(IN_DIM, OUT_DIM), 20
 WIDTH = min(IN_DIM, OUT_DIM)
 assert min(IN_DIM, OUT_DIM) <= WIDTH_MIN <= WIDTH_MAX
 assert min(IN_DIM, OUT_DIM) <= WIDTH
@@ -45,8 +45,8 @@ assert min(IN_DIM, OUT_DIM) <= WIDTH
 NUMTRAININGDATA = 100000
 BATCH_SIZE = 512
 LEARNING_RATE = 1e-5
-NUMSTEPS = 500000
-OPTIM = "momentum" # "sgd", "adam", "momentum"
+NUMSTEPS = 800000
+OPTIM = "sgd" # "sgd", "adam", "momentum"
 NUM_SEEDS = 1
 
 
@@ -91,7 +91,7 @@ FIXED_CONFIGS = {
     "verbose": True, 
     "data_config.num_training_data": NUMTRAININGDATA,
     "data_config.output_noise_std": 0.1,
-    "data_config.input_variance_range": [0.5, 2.5],
+    "data_config.input_variance_range": [0.5, 2.5], # P S P^T
     "model_config.input_dim": IN_DIM,
     "model_config.output_dim": OUT_DIM,
     "training_config.learning_rate": LEARNING_RATE,
@@ -106,13 +106,14 @@ FIXED_CONFIGS = {
 VARYING_CONFIGS = {
     "seed": list(range(NUM_SEEDS)),
     "data_config.teacher_matrix": [
-        ("diagonal", 50, 10), 
-        ("diag_power_law", 1.0, 50),
-        ("diag_power_law", 2.0, 100)
+        ("diagonal", 100, 10), 
+        ("diag_power_law", 0.5, 50),
+        ("diag_power_law", 1.0, 100), 
+        ("diag_power_law", 1.5, 200),
     ],
     "data_config.idcorr": [True, False],
     "model_config.hidden_layer_widths": width_options,
-    "model_config.initialisation_exponent": [-0.3, -0.1, 1.0, 2.0],
+    "model_config.initialisation_exponent": [-0.3, -0.1, 1.0, 2.0], # Jocot, 2019
 }
 
 # Generate commands
@@ -157,6 +158,6 @@ if write_to_file:
             "varying_configs": VARYING_CONFIGS
         })
         header_str = json.dumps(header_str, indent=None)
-        outfile.write(header_str)
+        outfile.write(header_str + "\n")
         outfile.write('\n'.join(COMMANDS))
     print("Done.")

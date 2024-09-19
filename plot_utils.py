@@ -9,7 +9,7 @@ import seaborn as sns
 from typing import Dict, Any, List, Callable
 
 # Import necessary functions from your utils module
-from utils import running_mean
+from utils import running_mean, to_json_friendly_tree
 
 # Set up matplotlib
 plt.rc('font', family='serif', serif='Times')
@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--output_dir", required=True, help="Directory to save the generated plots")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing plots")
     parser.add_argument("--dry_run", action="store_true", help="Print filepaths without saving plots")
+    parser.add_argument("--suptitle", action="store_true", help="Print suptitle on plots")
     return parser.parse_args()
 
 def _read_json_file(filepath: str) -> Dict[str, Any]:
@@ -167,7 +168,7 @@ def _generate_filepath(output_dir: str, data_subdir: str, name: str) -> str:
 
     return output_filepath
 
-def create_savefig_fn(output_dir: str, data_subdir: str, overwrite: bool, dry_run: bool) -> Callable:
+def create_savefig_fn(output_dir: str, data_subdir: str, overwrite: bool, dry_run: bool, suptitle=None) -> Callable:
     def _savefig_fn(fig, name: str):
         filepath = _generate_filepath(output_dir, data_subdir, name)
         if os.path.exists(filepath) and not overwrite:
@@ -178,6 +179,8 @@ def create_savefig_fn(output_dir: str, data_subdir: str, overwrite: bool, dry_ru
             print(f"Dry run: Would save figure to {filepath}")
         else:
             print(f"Saving figure: {filepath}")
+            if suptitle is not None:
+                fig.suptitle(suptitle, fontsize=7)
             fig.savefig(filepath, bbox_inches="tight")
         plt.close(fig)
     
@@ -185,20 +188,45 @@ def create_savefig_fn(output_dir: str, data_subdir: str, overwrite: bool, dry_ru
 
 
 
-def generate_plots(data_dir: str, data_subdir: str, output_dir: str, overwrite: bool, dry_run: bool):
+def generate_plots(args):
+    data_dir = args.data_dir
+    data_subdir = args.data_subdir
+    output_dir = args.output_dir
+    overwrite = args.overwrite
+    dry_run = args.dry_run
+    write_suptitle = args.suptitle
+    
     full_data_path = os.path.join(data_dir, data_subdir)
     expt_config, expt_info, expt_properties, df_sgd, df_gd, stagewise_dfs = extract_directory(full_data_path)
+    if write_suptitle:
+        suptitle = ""
+        for k, v in expt_config.items():
+            suptitle += f"{k}: {v}, "
+            if len(suptitle.split("\n")[-1]) > 150:
+                suptitle += "\n"
+    else:
+        suptitle = None
     
     # Create output directory structure
     os.makedirs(output_dir, exist_ok=True)
     
     # Create savefig function
-    savefig_fn = create_savefig_fn(output_dir, data_subdir, overwrite, dry_run)
+    savefig_fn = create_savefig_fn(output_dir, data_subdir, overwrite, dry_run, suptitle=suptitle)
     
     # Generate plots
     generate_sgd_plots(df_sgd, expt_config, expt_properties, savefig_fn)
     generate_gd_plots(df_gd, expt_properties, savefig_fn)
     generate_stagewise_plots(stagewise_dfs, savefig_fn)
+
+    config_filepath = _generate_filepath(output_dir, data_subdir, "config.json")
+    properties_filepath = _generate_filepath(output_dir, data_subdir, "properties.json")
+    with open(config_filepath, "w") as f:
+        print(f"Writing config to {config_filepath}")
+        json.dump(to_json_friendly_tree(expt_config), f, indent=2)
+    with open(properties_filepath, "w") as f:
+        print(f"Writing properties to {properties_filepath}")
+        json.dump(to_json_friendly_tree(expt_properties), f, indent=2)
+    return 
 
 
 def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dict[str, Any], savefig_fn: Callable):
@@ -213,8 +241,8 @@ def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dic
             "U", "S", "V", "Vhat", "ChangeOfBasis"
         ]
     ]
-
-    df["corrected_total_matrix_diagonals"] = df["corrected_total_matrix"].apply(lambda x: np.diag(x))
+    if "corrected_total_matrix_diagonals" not in df.columns:
+        df["corrected_total_matrix_diagonals"] = df["corrected_total_matrix"].apply(lambda x: np.diag(x))
 
     # Plot 1: Training Loss and LLC Estimation
     fig, axes = plt.subplots(4, 1, figsize=(10, 18), sharex=True)
@@ -297,6 +325,7 @@ def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dic
         ax.set_title(f"Stagewise potential: {name}")
         savefig_fn(fig, f"sgd_stagewise_potential_{name}.pdf")
 
+
 def generate_gd_plots(df: pd.DataFrame, properties: Dict[str, Any], savefig_fn: Callable):
     input_output_correlation_matrix = np.array(properties["input_output_cross_correlation_matrix"])
 
@@ -359,4 +388,4 @@ def generate_stagewise_plots(stagewise_dfs: Dict[str, pd.DataFrame], savefig_fn:
 
 if __name__ == "__main__":
     args = parse_args()
-    generate_plots(args.data_dir, args.data_subdir, args.output_dir, args.overwrite, args.dry_run)
+    generate_plots(args)
