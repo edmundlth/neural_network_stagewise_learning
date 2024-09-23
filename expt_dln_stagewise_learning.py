@@ -4,6 +4,7 @@ import jax.tree_util as jtree
 
 import numpy as np
 import optax
+import ast
 
 from dln import (
     create_dln_model, 
@@ -31,38 +32,47 @@ ex = Experiment('dln_stagewise_learning')
 
 
 
-def init_teacher_matrix(input_dim, output_dim, config=("diagonal", 50, 10)):
-    teacher_matrix_type = config[0]
+def init_teacher_matrix(
+        input_dim, 
+        output_dim, 
+        config={"type":"diagonal", "config_vals":[50, 10]}
+    ):
+    teacher_matrix_type = config["type"]
+    config_vals = config["config_vals"]
+    if isinstance(config_vals, str):
+        config_vals = ast.literal_eval(config_vals)
     print(f"Initialising teacher matrix with config: {config}")
     num_modes = min(input_dim, output_dim)
     if teacher_matrix_type == "random":
         teacher_matrix = np.random.randn(output_dim, input_dim)
     elif teacher_matrix_type == "diagonal":
-        max_val, min_val = config[1], config[2]
+        max_val, min_val = config_vals
         teacher_matrix = np.diag(np.linspace(max_val, min_val, num_modes))
     elif teacher_matrix_type == "diag_power_law":
-        power, max_val = config[1], config[2]
+        power, max_val = config_vals
         spectra = [max_val * (i + 1) ** (-power) for i in range(num_modes)]
         teacher_matrix = np.diag(spectra)
     elif teacher_matrix_type == "band":
-        bandwidth, bandgap = config[1], config[2]
-        if len(config) > 3:
-            num_group = config[3]
+        bandwidth, bandgap = config_vals[:2]
+        if len(config_vals) == 3:
+            num_group = config_vals[2]
+        else:
+            num_group = 3
         spectra = np.zeros(num_modes)
-        current_band_min = 0.01
+        current_band_min = 0.1
         num_assigned_modes = 0
         while num_assigned_modes < num_modes:
-            num_modes_in_band = np.random.randint(1, num_modes // min(num_group, num_modes))
+            num_modes_in_band = np.random.randint(2, num_modes // min(num_group, num_modes))
             num_modes_in_band = min(num_modes_in_band, num_modes - num_assigned_modes)
             current_band_max = current_band_min + bandwidth
             singular_values = np.random.uniform(current_band_min, current_band_max, num_modes_in_band)
             spectra[num_assigned_modes:num_assigned_modes + num_modes_in_band] = singular_values
             num_assigned_modes += num_modes_in_band
-            current_band_min = current_band_max + bandgap
-        teacher_matrix = np.diag(spectra)        
+            current_band_min = current_band_max + bandgap + np.random.uniform(bandgap / 10, bandgap / 5)
+        teacher_matrix = np.diag(spectra)
     else:
         raise ValueError(f"Unknown teacher matrix type: {teacher_matrix_type}")
-    return teacher_matrix[:output_dim, :input_dim]
+    return teacher_matrix[:input_dim, :output_dim]
 
 
 def estimate_cross_correlation_matrix(X, Y):
@@ -203,10 +213,8 @@ def gradient_flow(
     for t in range(num_steps):
         params, opt_state, loss = step(params, opt_state)
         if t % logging_period == 0:
-            total_matrix = get_dln_total_product_matrix(params)
             rec = {
                 "t": t,
-                "total_matrix": total_matrix,
                 "loss": float(loss),
                 "evals": [eval_fn(params) for eval_fn in eval_fns]
             }
@@ -222,10 +230,8 @@ def gradient_flow(
                     break
                 
     if t % logging_period != 0: # Log the final step
-        total_matrix = get_dln_total_product_matrix(params)
         rec = {
             "t": t,
-            "total_matrix": total_matrix,
             "loss": float(loss), 
             "evals": [eval_fn(params) for eval_fn in eval_fns]
         }
@@ -233,7 +239,69 @@ def gradient_flow(
     return records, params
 
 
+def run_sgld_chain(
+        rngkey, 
+        loss_fn, 
+        sgld_config, 
+        param_init, 
+        x, 
+        y,
+        itemp=None, 
+        trace_batch_loss=False
+    ):
+    """
+    Run SGLD with a known potential function.
+    :return: Tuple of (loss_trace, distances
+    """
+    rngkey, subkey = jax.random.split(rngkey)
+    rngkey, subkey = jax.random.split(rngkey)
+    loss_trace, distances, acceptance_probs = run_sgld(
+        subkey, 
+        loss_fn, 
+        sgld_config, 
+        param_init, 
+        x, 
+        y,
+        itemp=itemp, 
+        trace_batch_loss=trace_batch_loss, 
+        compute_distance=False, 
+        verbose=False, 
+        compute_mala_acceptance=False, 
+        output_samples=False
+    )
+    return loss_trace
 
+def run_llc_estimation(
+        rngkey, 
+        loss_fn, 
+        sgld_config, 
+        param_init, 
+        x, 
+        y,
+        itemp=1.0, 
+        loss_trace_minibatch=True,
+        burn_in_prop=0.9,
+    ):
+    num_training_data = x.shape[0]
+    lambdahat_list = []
+    for chain_idx, chain_rngkey in enumerate(jax.random.split(rngkey, sgld_config.num_chains)):
+        loss_trace = run_sgld_chain(
+            chain_rngkey, 
+            loss_fn, 
+            sgld_config, 
+            param_init, 
+            x, 
+            y,
+            itemp=itemp, 
+            trace_batch_loss=loss_trace_minibatch
+        )
+    
+        trace_start = min(int(burn_in_prop * len(loss_trace)), len(loss_trace) - 1)
+        init_loss = loss_fn(param_init, x, y)
+        lambdahat = float(np.mean(loss_trace[trace_start:]) - init_loss) * num_training_data * itemp
+        lambdahat_list.append(lambdahat)
+    lambdahat = np.mean(lambdahat_list)
+    return lambdahat_list
 
 
 @ex.config
@@ -241,8 +309,9 @@ def cfg():
     expt_name = f"dev"
     use_behavioural = True
     do_llc_estimation = False
+    spectral_resolution = None
     sgld_config = {
-        'epsilon': 5e-8,
+        'epsilon': 2e-8,
         'gamma': 1.0,
         'num_steps': 500,
         "num_chains": 1, 
@@ -258,7 +327,10 @@ def cfg():
         # ("diagonal", max, min), 
         # ("diag_power_law", power, max), 
         # ("band", bandwidth, bandgap, num_group)
-        "teacher_matrix": ("diagonal", 50, 10), 
+        "teacher_matrix": {
+            "type": "diagonal",
+            "config_vals": (50, 10),
+        }, 
         "idcorr": True,
     }
     model_config = {
@@ -288,7 +360,7 @@ def cfg():
     seed = 42
     logging_period = 200
     log_full_checkpoint_param = False
-    eval_mode = "full" # "full", "minimal"
+    eval_mode = "minimal" # "full", "minimal"
     do_plotting = False
     verbose = True
 
@@ -301,6 +373,7 @@ def run_experiment(
     expt_name,
     use_behavioural,
     do_llc_estimation,
+    spectral_resolution,
     sgld_config,
     loss_trace_minibatch,
     burn_in_prop,
@@ -332,6 +405,8 @@ def run_experiment(
     output_dim = model_config["output_dim"]
     initorigin = model_config["init_origin"]
     hidden_layer_widths = model_config["hidden_layer_widths"]
+    if isinstance(hidden_layer_widths, str):
+        hidden_layer_widths = ast.literal_eval(hidden_layer_widths)
     initialisation_exponent = model_config["initialisation_exponent"]
     if initialisation_exponent is None:
         if initorigin:
@@ -403,20 +478,30 @@ def run_experiment(
     )
     # est_input_output_correlation_matrix = (x_train.T @ y_train) / num_training_data
     # est_input_correlation_matrix = (x_train.T @ x_train) / num_training_data
-    
+        
     U, S, V, Vhat, ChangeOfBasis = get_matrices()
+    if spectral_resolution is not None:
+        previous_sing_val = S[0]
+        indices = [0]
+        for i, sing_val in enumerate(S[1:], 1):
+            if np.abs(sing_val - previous_sing_val) > spectral_resolution:
+                indices.append(i)
+                previous_sing_val = sing_val
 
     POTENTIAL_TYPES = [ 
         ("block", num_modes), 
         ("diag", num_modes), 
-        ("col", num_modes), 
-        ("row", num_modes),
-        ("corner", num_modes),
-        ("offdiag_inclusive", num_modes + 1), 
-        ("offdiag_exclusive", num_modes + 1), 
         ("row_col", num_modes),
-        ("behavioural", num_modes),
+        # ("behavioural", num_modes),
     ]
+    if eval_mode == "full":
+        POTENTIAL_TYPES += [
+            ("col", num_modes), 
+            ("row", num_modes),
+            ("corner", num_modes),
+            ("offdiag_inclusive", num_modes + 1), 
+            ("offdiag_exclusive", num_modes + 1), 
+        ]
     def get_stage_potential_fn(alpha, potential_type="block"):
         potential_type = potential_type.lower()
         if potential_type == "block":
@@ -462,7 +547,7 @@ def run_experiment(
         elif potential_type in ["behavioural"]:
             def stage_potential_fn(param):
                 modified_S = jnp.diag(
-                    [s if i < alpha else 0 for i, s in enumerate(S)]
+                    jnp.array([s if i < alpha else 0 for i, s in enumerate(S)])
                 )
                 H = (potential_matrix_fn(param) + modified_S) ** 2
                 result = jnp.sum(H)
@@ -544,6 +629,10 @@ def run_experiment(
             "total_potential_grad_norm", 
             theoretical_total_potential_grad_norm
         ),
+        (
+            "corrected_total_matrix_diagonals", 
+            lambda x: jnp.diag(U.T @ get_dln_total_product_matrix(x).T @ Vhat)
+        )
     ]
     for stage_potential_type, num_stages in POTENTIAL_TYPES:
         name = f"stage_potential={stage_potential_type}"
@@ -612,7 +701,6 @@ def run_experiment(
                 rec = {
                     "t": t + 1, 
                     "train_loss": float(train_loss),
-                    "corrected_total_matrix_diagonals": jnp.diag(corrected_total_matrix),
                     "true_lambda": true_lambda, 
                     "true_multiplicity": true_multiplicity, 
                     "est_total_rank": est_total_rank,
@@ -627,7 +715,6 @@ def run_experiment(
                     rec["trained_param"] = trained_param
                 
                 if do_llc_estimation:
-                    rngkey, subkey = jax.random.split(rngkey)
                     y_realisable = model.apply(trained_param, x_train) #+ jax.random.normal(subkey, shape=(num_training_data, output_dim)) * output_noise_std
                     if use_behavioural:
                         y = y_realisable
@@ -635,7 +722,7 @@ def run_experiment(
                         y = y_train
 
                     rngkey, subkey = jax.random.split(rngkey)
-                    loss_trace, distances, acceptance_probs, param_samples = run_sgld(
+                    lambdahat_list = run_llc_estimation(
                         subkey, 
                         loss_fn, 
                         sgld_config, 
@@ -643,21 +730,16 @@ def run_experiment(
                         x_train, 
                         y,
                         itemp=itemp, 
-                        trace_batch_loss=loss_trace_minibatch, 
-                        compute_distance=False, 
-                        verbose=False, 
-                        compute_mala_acceptance=False, 
-                        output_samples=True
+                        loss_trace_minibatch=loss_trace_minibatch,
+                        burn_in_prop=burn_in_prop
                     )
-                    trace_start = min(int(burn_in_prop * len(loss_trace)), len(loss_trace) - 1)
-                    init_loss = loss_fn(trained_param, x_train, y)
-                    lambdahat = float(np.mean(loss_trace[trace_start:]) - init_loss) * num_training_data * itemp
-
+                    lambdahat = float(np.mean(lambdahat_list))
 
                     rec.update(
                         {
-                            "lambdahat": float(lambdahat),
-                            "init_loss": float(init_loss),
+                            "lambdahat": lambdahat,
+                            "lambdahat_std": float(np.std(lambdahat_list)),
+                            "lambdahat_list": lambdahat_list
                         }
                     )
                     if eval_mode == "full":
@@ -743,7 +825,7 @@ def run_experiment(
         param = param_init
         _run.info["stagewise_gd_logs"][stage_potential_type] = {
             "eval_lists": list(eval_names),
-            "num_stages": len(stage_potential_fn_list),
+            "num_stages": len(stage_potential_fn_list), 
             "stage_logs": []
         }
         for alpha, stage_potential_fn in enumerate(stage_potential_fn_list):
@@ -762,30 +844,59 @@ def run_experiment(
             _run.info["stagewise_gd_logs"][stage_potential_type]["stage_logs"].append(
                 to_json_friendly_tree(grad_flow_rec)
             )
-    
-    # ##############################################
-    # # Plotting
-    # ##############################################
-    # if do_plotting:
-    #     import matplotlib.pyplot as plt
-    #     import plot_utils
-    #     def savefig_fn(fig, filename):
-    #         fig.savefig(filename)
-    #         _run.add_artifact(filename)
-    #         return 
-    #     df_sgd = plot_utils.parse_sgd_logs(_run.info["sgd_logs"])
-    #     plot_utils.generate_sgd_plots(
-    #         df_sgd, 
-    #         _run.config,
-    #         _run.info["expt_properties"],
-    #         savefig_fn
-    #     )
-    #     fig, ax = plt.subplots()
-    #     ax.plot(df_sgd["t"], df_sgd["train_loss"], label="SGD")
-    #     ax.set_xlabel("t")
-    #     ax.set_ylabel("Train Loss")
-    #     ax.legend()
-    #     savefig_fn(fig, "train_loss.png")
+
+            if do_llc_estimation:
+                print(f"Estimating llc for stage {alpha + 1} for potential type `{stage_potential_type}`")
+                y_realisable = model.apply(param, x_train)
+                if use_behavioural:
+                    y = y_realisable
+                else: 
+                    y = y_train
+
+                rngkey, subkey = jax.random.split(rngkey)
+                lambdahat_list = run_llc_estimation(
+                    subkey, 
+                    loss_fn, 
+                    sgld_config, 
+                    param, 
+                    x_train, 
+                    y,
+                    itemp=itemp, 
+                    loss_trace_minibatch=loss_trace_minibatch,
+                    burn_in_prop=burn_in_prop
+                )
+                lambdahat = np.mean(lambdahat_list)
+
+                
+                rngkey, subkey = jax.random.split(rngkey)
+                lambdahat_stage_potential_list = []
+                for chain_idx, chain_rngkey in enumerate(jax.random.split(subkey, sgld_config.num_chains)):
+
+                    loss_trace, _, _ = run_sgld_known_potential(
+                        rngkey, 
+                        stage_potential_fn, 
+                        sgld_config,
+                        param,
+                        num_training_data=num_training_data,
+                        itemp=itemp,
+                        compute_distance=False,
+                        verbose=False,
+                    )
+                    trace_start = min(int(burn_in_prop * len(loss_trace)), len(loss_trace) - 1)
+                    lambdahat_stage_potential = float(
+                        np.mean(loss_trace[trace_start:]) - loss_trace[0]
+                    ) * num_training_data * itemp
+                    lambdahat_stage_potential_list.append(lambdahat_stage_potential)
+                lambdahat_stage_potential = np.mean(lambdahat_stage_potential_list)
+
+                _run.info["stagewise_gd_logs"][stage_potential_type].update(
+                    {
+                        f"stage_llc_{alpha}": float(lambdahat),
+                        f"stage_llc_list_{alpha}": lambdahat_list,
+                        f"stage_llc_known_potential_{alpha}": float(lambdahat_stage_potential),
+                        f"stage_llc_known_potential_list_{alpha}": lambdahat_stage_potential_list,
+                    }
+                )
     return 
 
 
