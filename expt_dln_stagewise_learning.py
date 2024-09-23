@@ -72,6 +72,8 @@ def init_teacher_matrix(
         teacher_matrix = np.diag(spectra)
     else:
         raise ValueError(f"Unknown teacher matrix type: {teacher_matrix_type}")
+    print(f"Teacher matrix shape: {teacher_matrix.shape}")
+    print(f"Teacher matrix spectrum: {np.linalg.eigvals(teacher_matrix)}")
     return teacher_matrix[:input_dim, :output_dim]
 
 

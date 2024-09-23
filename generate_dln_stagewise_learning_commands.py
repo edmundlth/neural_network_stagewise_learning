@@ -32,21 +32,24 @@ def generate_sacred_commands(fixed_configs, varying_configs, script_name, observ
 current_time = datetime.datetime.now()
 datetime_str = current_time.strftime("%Y%m%d%H%M")
 
+NAME="banded"
 DLN_SIZE = "medium"
-IN_DIM = 15
-OUT_DIM = 15
+IN_DIM = 21
+OUT_DIM = 21
 NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 3
 WIDTH_TYPE = "vary" # "vary", "constant"
-WIDTH_MIN, WIDTH_MAX = min(IN_DIM, OUT_DIM), 20
+WIDTH_MIN, WIDTH_MAX = min(IN_DIM, OUT_DIM), 30
 WIDTH = min(IN_DIM, OUT_DIM)
 assert min(IN_DIM, OUT_DIM) <= WIDTH_MIN <= WIDTH_MAX
 assert min(IN_DIM, OUT_DIM) <= WIDTH
 
 NUMTRAININGDATA = 100000
 BATCH_SIZE = 512
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 5e-5
 NUMSTEPS = 800000
 OPTIM = "sgd" # "sgd", "adam", "momentum"
+
+DO_LLC_ESTIMATION = True
 NUM_SEEDS = 1
 
 
@@ -63,12 +66,13 @@ else:
     raise ValueError(f"Invalid WIDTH_TYPE: {WIDTH_TYPE}")
 
 EXPT_NAME = (
-    f"dln_{DLN_SIZE}_"
+    f"dln_{NAME}_{DLN_SIZE}_"
     f"width{width_str}_"
     f"layers{NUM_HIDDEN_LAYERS_MIN}-{NUM_HIDDEN_LAYERS_MAX}_"
     f"in{IN_DIM}_out{OUT_DIM}_"
     f"n{NUMTRAININGDATA}_"
     f"bs{BATCH_SIZE}_lr{LEARNING_RATE}_nstep{NUMSTEPS}_optim{OPTIM}_"
+    f"llc{DO_LLC_ESTIMATION}_"
     f"{datetime_str}"
 )
 
@@ -83,10 +87,10 @@ SACRED_OBSERVER = f"-F ./outputs/dln_stagewise_learning/{dev_str}{EXPT_NAME}/"
 FIXED_CONFIGS = {
     "expt_name": EXPT_NAME,
     "use_behavioural": True,
-    "do_llc_estimation": False,
+    "do_llc_estimation": DO_LLC_ESTIMATION,
     "loss_trace_minibatch": True,
     "burn_in_prop": 0.9,
-    "logging_period": 250,
+    "logging_period": 400,
     "log_full_checkpoint_param": False,
     "verbose": True, 
     "data_config.num_training_data": NUMTRAININGDATA,
@@ -98,22 +102,26 @@ FIXED_CONFIGS = {
     "training_config.batch_size": 512,
     "training_config.num_steps": NUMSTEPS,
     "training_config.optim": OPTIM,
-    "training_config.momentum": None,
+    "training_config.momentum": .9,
     "training_config.early_stopping_loss_threshold": 0.0099,
+    "sgld_config.gamma": 1.0,
+    "sgld_config.num_chains": 5,
+    "sgld_config.batch_size": 512,
 }
 
 # Parameters to vary (list of possible values for that parameter)
 VARYING_CONFIGS = {
     "seed": list(range(NUM_SEEDS)),
     "data_config.teacher_matrix": [
-        ("diagonal", 100, 10), 
-        ("diag_power_law", 0.5, 50),
-        ("diag_power_law", 1.0, 100), 
-        ("diag_power_law", 1.5, 200),
+        {"type": "band", "config_vals": "[2.0,5.0,3]"},
+        {"type": "band", "config_vals": "[1.0,5.0,2]"},
+        {"type": "band", "config_vals": "[1.0,10.0,2]"},
     ],
-    "data_config.idcorr": [True, False],
+    "data_config.idcorr": [True],
     "model_config.hidden_layer_widths": width_options,
-    "model_config.initialisation_exponent": [-0.3, -0.1, 1.0, 2.0], # Jocot, 2019
+    "model_config.initialisation_exponent": [-0.1, 1.0, 2.0], # [-0.3, -0.1, 1.0, 2.0], # Jocot, 2019
+    "sgld_config.epsilon": [5e-8, 2e-8],
+    "sgld_config.num_steps": [800],
 }
 
 # Generate commands
@@ -150,7 +158,7 @@ else:
     write_to_file = True
 
 if write_to_file:
-    print(f"Writing to file.")
+    print(f"Writing {len(COMMANDS)} commands file: {filepath}")
     with open(filepath, "w") as outfile:
         header_str = to_json_friendly_tree({
             "expt_name": EXPT_NAME,
