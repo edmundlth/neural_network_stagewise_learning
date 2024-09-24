@@ -597,7 +597,7 @@ def run_experiment(
                 "ChangeOfBasis": ChangeOfBasis.tolist()
             },
             "num_hidden_layers": num_hidden_layers,
-            "stage_potential_types": POTENTIAL_TYPES,
+            "stage_potential_types": list(POTENTIAL_TYPES),
             # "est_input_output_correlation_matrix": est_input_output_correlation_matrix.tolist(),
             # "est_input_correlation_matrix": est_input_correlation_matrix.tolist(),
         }
@@ -880,7 +880,7 @@ def run_experiment(
                 for chain_idx, chain_rngkey in enumerate(jax.random.split(subkey, sgld_config.num_chains)):
 
                     loss_trace, _, _ = run_sgld_known_potential(
-                        rngkey, 
+                        chain_rngkey, 
                         stage_potential_fn, 
                         sgld_config,
                         param,
