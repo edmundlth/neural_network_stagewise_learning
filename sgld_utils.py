@@ -180,8 +180,8 @@ def run_sgld_known_potential(
     """
 
     def _log_prior(param):
-        sqnorm = jax.tree.map(lambda x, y: jnp.sum((x - y)**2), param, param_init)
-        return jax.tree.reduce(lambda x, y: x + y, sqnorm)
+        sqnorm = jtree.tree_map(lambda x, y: jnp.sum((x - y)**2), param, param_init)
+        return jtree.tree_reduce(lambda x, y: x + y, sqnorm)
     
     def neglogprob_fn(param):
         negloglike = num_training_data * potential_fn(param)
