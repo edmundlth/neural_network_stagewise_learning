@@ -693,12 +693,17 @@ def run_experiment(
                 corrected_total_matrix = U.T @ total_matrix.T @ Vhat
                 
                 # Estimate rank and using it to calculate true lambda and multiplicity
-                est_total_rank = jnp.sum(jnp.abs(jnp.linalg.eigvals(total_matrix)) > min(S) * 1e-2)
-                true_lambda, true_multiplicity = true_dln_learning_coefficient(
-                    est_total_rank, 
-                    layer_widths, 
-                    input_dim, 
-                )
+                try: 
+                    est_total_rank = jnp.sum(jnp.abs(jnp.linalg.eigvals(total_matrix)) > min(S) * 1e-2)
+                    true_lambda, true_multiplicity = true_dln_learning_coefficient(
+                        est_total_rank, 
+                        layer_widths, 
+                        input_dim, 
+                    )
+                except Exception as e: # Likely a NotImplementedError from jax.numpy.linalg.eigvals
+                    print(f"Error in calculating true lambda and multiplicity: {e}")
+                    est_total_rank = None
+                    true_lambda, true_multiplicity = None, None
 
                 rec = {
                     "t": t + 1, 
@@ -848,7 +853,8 @@ def run_experiment(
             )
 
             if do_llc_estimation:
-                print(f"Estimating llc for stage {alpha + 1} for potential type `{stage_potential_type}`")
+                if verbose:
+                    print(f"Estimating llc for stage {alpha + 1} for potential type `{stage_potential_type}`")
                 y_realisable = model.apply(param, x_train)
                 if use_behavioural:
                     y = y_realisable
