@@ -73,7 +73,6 @@ def init_teacher_matrix(
     else:
         raise ValueError(f"Unknown teacher matrix type: {teacher_matrix_type}")
     print(f"Teacher matrix shape: {teacher_matrix.shape}")
-    print(f"Teacher matrix spectrum: {np.linalg.eigvals(teacher_matrix)}")
     return teacher_matrix[:input_dim, :output_dim]
 
 
@@ -156,7 +155,7 @@ def make_potential_fn(
     def potential_matrix_fn(param):
         param = jtree.tree_map(lambda x: jnp.array(x), param, is_leaf=is_leaf)
         total_matrix = get_dln_total_product_matrix(param)
-        potential_matrix = U.T @ (total_matrix.T - teacher_matrix) @ Vhat
+        potential_matrix = U.T @ (total_matrix.T - teacher_matrix.T) @ Vhat
         return potential_matrix
     
     @jax.jit
@@ -306,12 +305,43 @@ def run_llc_estimation(
     return lambdahat_list
 
 
+def group_values_by_resolution(values, resolution):
+    """
+    Given a list of values, group them into groups such that the difference between
+    the maximum and minimum value in each group is at most the given resolution.
+    Return a list of lists, where each sublist contains the indices of the values
+    in that group.
+    """
+    if not values:
+        return []
+
+    sorted_indices = sorted(range(len(values)), key=lambda i: values[i])
+    sorted_values = [values[i] for i in sorted_indices]
+
+    groups = []
+    current_group = [sorted_indices[0]]
+    group_start_value = sorted_values[0]
+
+    for i in range(1, len(sorted_values)):
+        if sorted_values[i] - group_start_value >= resolution:
+            groups.append(current_group)
+            current_group = []
+            group_start_value = sorted_values[i]
+        current_group.append(sorted_indices[i])
+
+    # Add the last group
+    if current_group:
+        groups.append(current_group)
+
+    # Sort indices within each group
+    return [sorted(group) for group in groups]
+
+
 @ex.config
 def cfg():
     expt_name = f"dev"
     use_behavioural = True
     do_llc_estimation = False
-    spectral_resolution = None
     sgld_config = {
         'epsilon': 2e-8,
         'gamma': 1.0,
@@ -375,7 +405,6 @@ def run_experiment(
     expt_name,
     use_behavioural,
     do_llc_estimation,
-    spectral_resolution,
     sgld_config,
     loss_trace_minibatch,
     burn_in_prop,
@@ -431,6 +460,7 @@ def run_experiment(
     ####################
     # Teacher matrix
     teacher_matrix = init_teacher_matrix(input_dim, output_dim, config=data_config["teacher_matrix"])
+    teacher_matrix = jnp.array(teacher_matrix, dtype=jnp.float32)
     
     # Gerenate training data
     rngkey, rngkey = jax.random.split(rngkey)
@@ -482,27 +512,29 @@ def run_experiment(
     # est_input_correlation_matrix = (x_train.T @ x_train) / num_training_data
         
     U, S, V, Vhat, ChangeOfBasis = get_matrices()
-    if spectral_resolution is not None:
-        previous_sing_val = S[0]
-        indices = [0]
-        for i, sing_val in enumerate(S[1:], 1):
-            if np.abs(sing_val - previous_sing_val) > spectral_resolution:
-                indices.append(i)
-                previous_sing_val = sing_val
+    if data_config["teacher_matrix"]["type"] == "band":
+        teacher_config_val = ast.literal_eval(data_config["teacher_matrix"]["config_vals"])
+        bandwidth = teacher_config_val[0]
+        spectral_indices_group = group_values_by_resolution(S.tolist(), bandwidth)
+        print(f"Spectral indices group: {spectral_indices_group}")
+        stage_indices = sorted([max(group) for group in spectral_indices_group])
+    else:
+        stage_indices = list(range(num_modes))
+    print(f"Stage indices: {stage_indices}")
 
     POTENTIAL_TYPES = [ 
-        ("block", num_modes), 
-        ("diag", num_modes), 
-        ("row_col", num_modes),
+        ("block", stage_indices), 
+        ("diag", stage_indices), 
+        ("row_col", stage_indices),
         # ("behavioural", num_modes),
     ]
     if eval_mode == "full":
         POTENTIAL_TYPES += [
-            ("col", num_modes), 
-            ("row", num_modes),
-            ("corner", num_modes),
-            ("offdiag_inclusive", num_modes + 1), 
-            ("offdiag_exclusive", num_modes + 1), 
+            ("col", stage_indices), 
+            ("row", stage_indices),
+            ("corner", stage_indices),
+            ("offdiag_inclusive", stage_indices + [num_modes + 1]), 
+            ("offdiag_exclusive", stage_indices + [num_modes + 1]), 
         ]
     def get_stage_potential_fn(alpha, potential_type="block"):
         potential_type = potential_type.lower()
@@ -583,7 +615,7 @@ def run_experiment(
     ##############################################
     # Record stuff before training
     ##############################################
-    _run.info = {
+    _run.info = to_json_friendly_tree({
         "expt_properties": {
             "teacher_matrix": teacher_matrix.tolist(),
             "input_correlation_matrix": input_correlation_matrix.tolist(),
@@ -601,7 +633,7 @@ def run_experiment(
             # "est_input_output_correlation_matrix": est_input_output_correlation_matrix.tolist(),
             # "est_input_correlation_matrix": est_input_correlation_matrix.tolist(),
         }
-    }
+    })
 
     ##############################################
     # SGD training
@@ -636,19 +668,20 @@ def run_experiment(
             lambda x: jnp.diag(U.T @ get_dln_total_product_matrix(x).T @ Vhat)
         )
     ]
-    for stage_potential_type, num_stages in POTENTIAL_TYPES:
+    for stage_potential_type, indices in POTENTIAL_TYPES:
         name = f"stage_potential={stage_potential_type}"
         # We create this list so that the functions are jitted only once
         # We pass it as a default argument to avoid late binding closure issues
         fn_list = [
             get_stage_potential_fn(a, potential_type=stage_potential_type) 
-            for a in range(num_stages)
+            for a in indices
         ]
         func = lambda x, fn_list=fn_list:[
             stage_potential_fn(x)
             for stage_potential_fn in fn_list
         ]
         eval_list.append((name, func))
+    
     if eval_mode == "full":
         eval_list += [
             (
@@ -660,9 +693,9 @@ def run_experiment(
                 lambda x: [
                     [
                         float(theoretical_gradient_norm(x, [[a, b]]))
-                        for b in range(num_modes)
+                        for b in stage_indices
                     ] 
-                    for a in range(num_modes)
+                    for a in stage_indices
                 ]
             ), 
         ]
@@ -818,15 +851,15 @@ def run_experiment(
     ##############################################
     print("Starting stagewise gradient descent")
     _run.info["stagewise_gd_logs"] = {}
-    for stage_potential_type, num_stages in POTENTIAL_TYPES:
+    for stage_potential_type, indices in POTENTIAL_TYPES:
         stage_potential_fn_list = [
             get_stage_potential_fn(alpha, potential_type=stage_potential_type) 
-            for alpha in range(num_stages)
+            for alpha in indices
         ]
         eval_fns = [potential_fn] + stage_potential_fn_list
         eval_names = ["total_potential"] + [
             f"stage_potential_{stage_potential_type}_{alpha}" 
-            for alpha in range(num_stages)
+            for alpha in indices
         ]
         param = param_init
         _run.info["stagewise_gd_logs"][stage_potential_type] = {
