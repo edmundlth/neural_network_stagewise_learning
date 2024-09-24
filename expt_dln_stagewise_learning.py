@@ -757,7 +757,6 @@ def run_experiment(
                         f"t: {t + 1:6d}, "
                         + f"train_loss: {float(train_loss):.3f}, "
                         + (f"llc: {lambdahat:.3f}, " if do_llc_estimation else "")
-                        + (f"true_llc: {true_lambda:.1f}, " if do_llc_estimation else "")
                         + (f"Est total rank: {est_total_rank}")
                     )
 
