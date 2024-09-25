@@ -59,7 +59,7 @@ def init_teacher_matrix(
         else:
             num_group = 3
         spectra = np.zeros(num_modes)
-        current_band_min = 0.1
+        current_band_min = bandwidth
         num_assigned_modes = 0
         while num_assigned_modes < num_modes:
             num_modes_in_band = np.random.randint(2, num_modes // min(num_group, num_modes))
