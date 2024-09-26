@@ -70,6 +70,30 @@ def init_teacher_matrix(
             num_assigned_modes += num_modes_in_band
             current_band_min = current_band_max + bandgap + np.random.uniform(bandgap / 10, bandgap / 5)
         teacher_matrix = np.diag(spectra)
+    elif teacher_matrix_type == "band_power_law":
+        bandwidth, power = config_vals[:2]
+        if len(config_vals) == 3:
+            num_group = config_vals[2]
+        else:
+            num_group = 3
+        num_assigned_modes = 0
+        index_groups = []
+        while num_assigned_modes < num_modes:
+            num_modes_in_band = np.random.randint(2, num_modes // min(num_group, num_modes))
+            num_modes_in_band = min(num_modes_in_band, num_modes - num_assigned_modes)
+            band_indices = list(range(num_assigned_modes, num_assigned_modes + num_modes_in_band))
+            index_groups.append(band_indices)
+            num_assigned_modes += num_modes_in_band
+        if len(config_vals) == 4:
+            max_val = config_vals[3]
+        else:
+            max_val = 20 * len(index_groups)
+        spectra = np.zeros(num_modes)
+        for i, band_indices in enumerate(index_groups):
+            current_band_center = max_val * (i + 1) ** (-power)
+            singular_values = np.random.uniform(current_band_center - bandwidth / 2, current_band_center + bandwidth / 2, len(band_indices))
+            spectra[band_indices] = singular_values
+        teacher_matrix = np.diag(spectra)
     else:
         raise ValueError(f"Unknown teacher matrix type: {teacher_matrix_type}")
     print(f"Teacher matrix shape: {teacher_matrix.shape}")
@@ -270,7 +294,7 @@ def run_sgld_chain(
         compute_mala_acceptance=False, 
         output_samples=False
     )
-    return loss_trace
+    return np.array(loss_trace)
 
 def run_llc_estimation(
         rngkey, 
@@ -463,16 +487,18 @@ def run_experiment(
     teacher_matrix = jnp.array(teacher_matrix, dtype=jnp.float32)
     
     # Gerenate training data
-    rngkey, rngkey = jax.random.split(rngkey)
+    
     if use_idcorr:
         input_correlation_matrix = jnp.eye(input_dim)
     else:
+        rngkey, subkey = jax.random.split(rngkey)
         input_correlation_matrix = generate_random_covariance_matrix(
             rngkey, 
             input_dim, 
             max_variance=input_variance_range[1],
             min_variance=input_variance_range[0]
         )
+    rngkey, subkey = jax.random.split(rngkey)
     x_train = jax.random.multivariate_normal(
         rngkey, 
         jnp.zeros(input_dim), 

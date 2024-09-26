@@ -33,24 +33,24 @@ current_time = datetime.datetime.now()
 datetime_str = current_time.strftime("%Y%m%d%H%M")
 
 NAME="banded"
-DLN_SIZE = "medium"
-IN_DIM = 21
-OUT_DIM = 21
-NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 3
+DLN_SIZE = "large"
+IN_DIM = 256
+OUT_DIM = 256
+NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 2
 WIDTH_TYPE = "vary" # "vary", "constant"
-WIDTH_MIN, WIDTH_MAX = min(IN_DIM, OUT_DIM), 30
+WIDTH_MIN, WIDTH_MAX = min(IN_DIM, OUT_DIM), 800
 WIDTH = min(IN_DIM, OUT_DIM)
 assert min(IN_DIM, OUT_DIM) <= WIDTH_MIN <= WIDTH_MAX
 assert min(IN_DIM, OUT_DIM) <= WIDTH
 
 NUMTRAININGDATA = 100000
-BATCH_SIZE = 512
-LEARNING_RATE = 5e-5
+BATCH_SIZE = 1024
+LEARNING_RATE = 2e-4
 NUMSTEPS = 800000
 OPTIM = "sgd" # "sgd", "adam", "momentum"
 
 DO_LLC_ESTIMATION = True
-NUM_SEEDS = 1
+NUM_SEEDS = 3
 
 
 if WIDTH_TYPE == "vary":
@@ -90,7 +90,7 @@ FIXED_CONFIGS = {
     "do_llc_estimation": DO_LLC_ESTIMATION,
     "loss_trace_minibatch": True,
     "burn_in_prop": 0.9,
-    "logging_period": 400,
+    "logging_period": 1200,
     "log_full_checkpoint_param": False,
     "verbose": True, 
     "data_config.num_training_data": NUMTRAININGDATA,
@@ -113,15 +113,17 @@ FIXED_CONFIGS = {
 VARYING_CONFIGS = {
     "seed": list(range(NUM_SEEDS)),
     "data_config.teacher_matrix": [
-        {"type": "band", "config_vals": "[2.0,5.0,3]"},
-        {"type": "band", "config_vals": "[1.0,5.0,2]"},
-        {"type": "band", "config_vals": "[1.0,10.0,2]"},
+        {"type": "band_power_law", "config_vals": "[5.0,1.05,2,300]"},
+        {"type": "band_power_law", "config_vals": "[20.0,1.05,2,300]"},
+        # {"type": "band", "config_vals": "[2.0,20.0,2]"},
+        # {"type": "band", "config_vals": "[1.0,5.0,2]"},
+        # {"type": "band", "config_vals": "[1.0,10.0,2]"},
     ],
     "data_config.idcorr": [True],
     "model_config.hidden_layer_widths": width_options,
-    "model_config.initialisation_exponent": [-0.1, 1.0, 2.0], # [-0.3, -0.1, 1.0, 2.0], # Jocot, 2019
-    "sgld_config.epsilon": [5e-8, 2e-8],
-    "sgld_config.num_steps": [800],
+    "model_config.initialisation_exponent": [2.0], # [-0.3, -0.1, 1.0, 2.0], # Jocot, 2019
+    "sgld_config.epsilon": [2e-8],
+    "sgld_config.num_steps": [2000],
 }
 
 # Generate commands
