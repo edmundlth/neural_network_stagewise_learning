@@ -551,11 +551,11 @@ def run_experiment(
     POTENTIAL_TYPES = [ 
         ("block", stage_indices), 
         ("diag", stage_indices), 
-        ("row_col", stage_indices),
         # ("behavioural", num_modes),
     ]
     if eval_mode == "full":
         POTENTIAL_TYPES += [
+            ("row_col", stage_indices),
             ("col", stage_indices), 
             ("row", stage_indices),
             ("corner", stage_indices),
@@ -882,6 +882,12 @@ def run_experiment(
             get_stage_potential_fn(alpha, potential_type=stage_potential_type) 
             for alpha in indices
         ]
+        if len(stage_potential_fn_list) > 20:
+            print(
+                f"WARNING: Too many stages for potential type `{stage_potential_type}`."
+                 "Only do stagewise GD for the first 20 stages."
+            )
+            stage_potential_fn_list = stage_potential_fn_list[:20]
         eval_fns = [potential_fn] + stage_potential_fn_list
         eval_names = ["total_potential"] + [
             f"stage_potential_{stage_potential_type}_{alpha}" 
