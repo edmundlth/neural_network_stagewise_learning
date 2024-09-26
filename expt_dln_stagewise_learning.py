@@ -538,7 +538,7 @@ def run_experiment(
     # est_input_correlation_matrix = (x_train.T @ x_train) / num_training_data
         
     U, S, V, Vhat, ChangeOfBasis = get_matrices()
-    if data_config["teacher_matrix"]["type"] == "band":
+    if data_config["teacher_matrix"]["type"] in ["band", "band_power_law"]:
         teacher_config_val = ast.literal_eval(data_config["teacher_matrix"]["config_vals"])
         bandwidth = teacher_config_val[0]
         spectral_indices_group = group_values_by_resolution(S.tolist(), bandwidth)
