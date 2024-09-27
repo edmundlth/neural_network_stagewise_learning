@@ -75,7 +75,10 @@ def run_sgld(
     accept_probs = []
     opt_state = sgldoptim.init(param_init)
     param = param_init
-    samples = [param]
+    if output_samples:
+        samples = [param]
+    else:
+        samples = []
     t = 0
     while t < sgld_config.num_steps:
         for x_batch, y_batch in create_minibatches(x_train, y_train, batch_size=sgld_config.batch_size):
@@ -117,7 +120,8 @@ def run_sgld(
             _, grads = sgld_grad_fn(param, x_batch, y_batch)
             updates, opt_state = sgldoptim.update(grads, opt_state)
             param = optax.apply_updates(param, updates)
-            samples.append(param)
+            if output_samples:
+                samples.append(param)
             t += 1
             if t >= sgld_config.num_steps:
                 break
