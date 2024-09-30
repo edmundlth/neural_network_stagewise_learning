@@ -93,7 +93,7 @@ def config():
         'num_steps': 30001,
         "early_stopping_loss_threshold": 1e-8
     }
-
+    
     sgld_config = {
         'epsilon': 5e-6,
         'gamma': 1.0,
@@ -105,6 +105,9 @@ def config():
     max_num_stages = 15
 
     do_llc_estimation = True
+    do_taskwise_training = True
+    taskwise_training_num_steps = None
+
     logging_period = 500
 
     seed = 0
@@ -125,6 +128,8 @@ def run_experiment(
     burn_in_prop,
     max_num_stages,
     do_llc_estimation,
+    do_taskwise_training,
+    taskwise_training_num_steps,
     logging_period,
     seed,
     dataset_seed,
@@ -148,7 +153,8 @@ def run_experiment(
 
     batch_size = training_config['batch_size']
     num_steps = training_config['num_steps']
-    learning_rate = training_config['learning_rate']
+    if taskwise_training_num_steps is None:
+        taskwise_training_num_steps = num_steps
     early_stopping_epsilon = training_config['early_stopping_loss_threshold']
 
     if sgld_config['batch_size'] is None:
@@ -213,7 +219,15 @@ def run_experiment(
     ########################################################
     # Training set up
     ########################################################
-    optimizer = optax.adam(learning_rate)
+    if training_config["optim"] == "sgd":
+        optimizer = optax.sgd(learning_rate=training_config["learning_rate"])
+    elif training_config["optim"] == "momentum":
+        optimizer = optax.sgd(learning_rate=training_config["learning_rate"], momentum=training_config["momentum"])
+    elif training_config["optim"] == "adam":
+        optimizer = optax.adam(learning_rate=training_config["learning_rate"], b1=0.9, b2=0.999, eps=1e-8)
+    else:
+        raise ValueError(f"Unknown optimiser: {training_config['optim']}")
+    
     opt_state = optimizer.init(param_init)
 
     @jax.jit
@@ -342,84 +356,85 @@ def run_experiment(
     # Task-wise training
     ########################################################
 
-    _run.info["stage_records"] = []
-    for stage in range(1, max_num_stages):
-        task_ids = np.arange(stage).astype(int)
-        stage_mask = (train_features[:, task_ids[0]] == 1)
-        
-        for task_id in task_ids[1:]:
-            stage_mask = stage_mask | (train_features[:, task_id] == 1)
-        stage_features = train_features[stage_mask]
-        stage_labels = train_labels[stage_mask]
-        print(stage_features.shape, stage_labels.shape)
+    if do_taskwise_training:
+        _run.info["stage_records"] = []
+        for stage in range(1, max_num_stages):
+            task_ids = np.arange(stage).astype(int)
+            stage_mask = (train_features[:, task_ids[0]] == 1)
+            
+            for task_id in task_ids[1:]:
+                stage_mask = stage_mask | (train_features[:, task_id] == 1)
+            stage_features = train_features[stage_mask]
+            stage_labels = train_labels[stage_mask]
+            print(stage_features.shape, stage_labels.shape)
 
-        # reinitialize parameter for each stage
-        param_stage = param_init
-        optimizer_stage = optax.adam(learning_rate)
-        opt_state_stage = optimizer_stage.init(param_stage)
+            # reinitialize parameter for each stage
+            param_stage = param_init
+            optimizer_stage = optimizer
+            opt_state_stage = optimizer_stage.init(param_stage)
 
-        # Create data generator
-        rngkey, gen_key = jax.random.split(rngkey)
-        train_gen_stage = data_generator(stage_features, stage_labels, batch_size, gen_key)
+            # Create data generator
+            rngkey, gen_key = jax.random.split(rngkey)
+            train_gen_stage = data_generator(stage_features, stage_labels, batch_size, gen_key)
 
-        # Training loop
-        stage_rec = []
-        step_stage = 0
-        while step_stage < num_steps:
-            x_batch, y_batch = next(train_gen_stage)
-            loss, param_stage, opt_state_stage = make_step(param_stage, x_batch, y_batch, opt_state_stage)
+            # Training loop
+            stage_rec = []
+            step_stage = 0
+            while step_stage < taskwise_training_num_steps:
+                x_batch, y_batch = next(train_gen_stage)
+                loss, param_stage, opt_state_stage = make_step(param_stage, x_batch, y_batch, opt_state_stage)
 
-            if step_stage % logging_period == 0:
-                test_acc = compute_accuracy(param_stage, test_features, test_labels)
-                test_loss = loss_fn(param_stage, test_features, test_labels)
-                batch_acc = compute_accuracy(param_stage, x_batch, y_batch)
-                rec = {
-                    "step": step_stage,
-                    "loss": float(loss),
-                    "test_loss": float(test_loss),
-                    "test_acc": float(test_acc),
-                    "batch_acc": float(batch_acc),
-                }
-                
-                stage_rec.append(rec)
-                if do_llc_estimation:
-                    x_train = stage_features
-                    y = jax.nn.softmax(model.apply(param_stage, None, x_train))
+                if step_stage % logging_period == 0:
+                    test_acc = compute_accuracy(param_stage, test_features, test_labels)
+                    test_loss = loss_fn(param_stage, test_features, test_labels)
+                    batch_acc = compute_accuracy(param_stage, x_batch, y_batch)
+                    rec = {
+                        "step": step_stage,
+                        "loss": float(loss),
+                        "test_loss": float(test_loss),
+                        "test_acc": float(test_acc),
+                        "batch_acc": float(batch_acc),
+                    }
+                    
+                    stage_rec.append(rec)
+                    if do_llc_estimation:
+                        x_train = stage_features
+                        y = jax.nn.softmax(model.apply(param_stage, None, x_train))
 
-                    rngkey, subkey = jax.random.split(rngkey)
-                    lambdahat_list, loss_traces = run_llc_estimation(
-                        subkey, 
-                        loss_fn, 
-                        sgld_config, 
-                        param_stage, 
-                        x_train, 
-                        y,
-                        itemp=itemp, 
-                        loss_trace_minibatch=loss_trace_minibatch,
-                        burn_in_prop=burn_in_prop, 
-                        return_loss_trace=log_sgld_loss_trace
-                    )
-                    lambdahat = float(np.mean(lambdahat_list))
-                    rec.update(
-                        {
-                            "llc_est": float(lambdahat),
-                            "llc_est_list": lambdahat_list,
-                            "loss_trace": loss_traces,
-                        }
-                    )
-                if verbose:
-                    print(
-                        f"Stage {stage}, "
-                        + f"Step {step_stage:6d}, "
-                        + f"Loss: {loss:.8f}, "
-                        + f"Test Acc: {test_acc:.2f}, "
-                        + f"llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
-                    )
-            step_stage += 1
-            if step_stage >= num_steps:
-                break    
-            if step_stage > 0 and stage_rec[-1]["loss"] < early_stopping_epsilon:
-                break
-        _run.info["stage_records"].append(to_json_friendly_tree(stage_rec))
+                        rngkey, subkey = jax.random.split(rngkey)
+                        lambdahat_list, loss_traces = run_llc_estimation(
+                            subkey, 
+                            loss_fn, 
+                            sgld_config, 
+                            param_stage, 
+                            x_train, 
+                            y,
+                            itemp=itemp, 
+                            loss_trace_minibatch=loss_trace_minibatch,
+                            burn_in_prop=burn_in_prop, 
+                            return_loss_trace=log_sgld_loss_trace
+                        )
+                        lambdahat = float(np.mean(lambdahat_list))
+                        rec.update(
+                            {
+                                "llc_est": float(lambdahat),
+                                "llc_est_list": lambdahat_list,
+                                "loss_trace": loss_traces,
+                            }
+                        )
+                    if verbose:
+                        print(
+                            f"Stage {stage}, "
+                            + f"Step {step_stage:6d}, "
+                            + f"Loss: {loss:.8f}, "
+                            + f"Test Acc: {test_acc:.2f}, "
+                            + f"llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
+                        )
+                step_stage += 1
+                if step_stage >= taskwise_training_num_steps:
+                    break    
+                if step_stage > 0 and stage_rec[-1]["loss"] < early_stopping_epsilon:
+                    break
+            _run.info["stage_records"].append(to_json_friendly_tree(stage_rec))
     return 
     

@@ -36,7 +36,7 @@ NUMSTEPS = 500000
 OPTIM = "adam" # "sgd", "adam", "momentum"
 
 DO_LLC_ESTIMATION = True
-LOG_SGLD_LOSS_TRACE = True
+LOG_SGLD_LOSS_TRACE = False
 NUM_SEEDS = 1
 
 
@@ -79,6 +79,9 @@ FIXED_CONFIGS = {
     "sgld_config.gamma": 1.0,
     "sgld_config.num_chains": 3,
     "sgld_config.batch_size": None,
+
+    "do_taskwise_training": True,
+    "max_num_stages": 10,
 }
 
 # Parameters to vary (list of possible values for that parameter)
@@ -94,6 +97,8 @@ VARYING_CONFIGS = {
 
     "sgld_config.epsilon": [5e-6],
     "sgld_config.num_steps": [1000],
+
+    "taskwise_training_num_steps": [50000]
 }
 
 # Generate commands
