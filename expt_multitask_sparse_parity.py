@@ -91,6 +91,7 @@ def config():
         "momentum": 0.9,
         'batch_size': 256,
         'num_steps': 30001,
+        "early_stopping_loss_threshold": 1e-8
     }
 
     sgld_config = {
@@ -100,14 +101,14 @@ def config():
         "num_chains": 1, 
         "batch_size": 256
     }
-    early_stopping_epsilon = 1e-8
+    burn_in_prop = 0.9
     max_num_stages = 15
 
     do_llc_estimation = True
     logging_period = 500
 
     seed = 0
-    dataset_seed = 0
+    dataset_seed = None
     verbose = False
     log_sgld_loss_trace = False
 
@@ -121,7 +122,7 @@ def run_experiment(
     model_config,
     training_config,
     sgld_config,
-    early_stopping_epsilon,
+    burn_in_prop,
     max_num_stages,
     do_llc_estimation,
     logging_period,
@@ -148,11 +149,16 @@ def run_experiment(
     batch_size = training_config['batch_size']
     num_steps = training_config['num_steps']
     learning_rate = training_config['learning_rate']
+    early_stopping_epsilon = training_config['early_stopping_loss_threshold']
 
-
+    if sgld_config['batch_size'] is None:
+        new_sgld_config = sgld_config.copy()
+        new_sgld_config['batch_size'] = batch_size
+        sgld_config = new_sgld_config
     sgld_config = SGLDConfig(**sgld_config)
+    print(sgld_config)
     loss_trace_minibatch = True
-    burn_in_prop = 0.9
+
     itemp = 1.0 / jnp.log(num_training_samples)
 
     _run.info["expt_properties"] = to_json_friendly_tree({

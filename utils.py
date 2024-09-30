@@ -4,7 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.special import logsumexp
 from scipy.stats import linregress
-
+import itertools
+import os
 
 
 def running_mean(data, window_size=10):
@@ -199,3 +200,55 @@ def linspaced_itemps_by_n(n, num_itemps):
         1 / np.log(n) * (1 + 1 / np.sqrt(2 * np.log(n))),
         num_itemps,
     )
+
+
+###########################################################
+# SACRED COMMAND GENERATION
+###########################################################
+
+def _create_cmd_string(key, value):
+    return f'"{key}={value}"'
+    
+def generate_sacred_commands(fixed_configs, varying_configs, script_name, observer=None):
+    if observer is None:
+        observer = ""
+    prefix_string = f"python {script_name} {observer} with"
+    keys, values = zip(*varying_configs.items())
+    commands = []
+    for combo in itertools.product(*values):
+        cmd = [prefix_string]
+
+        for key, value in fixed_configs.items():
+            cmd.append(_create_cmd_string(key, value))
+
+        for key, value in zip(keys, combo):
+            cmd.append(_create_cmd_string(key, value))
+
+        commands.append(" ".join(cmd))
+    return commands
+
+def write_commands_to_file(filepath, commands, header_str):
+    print(f"Chosen filepath: {filepath}")
+    write_to_file = False
+    if os.path.exists(filepath):
+        filelist = '\n'.join(os.listdir(os.path.dirname(filepath)))
+        print(
+            f"File already exists. Files in directory:\n{filelist}"
+        )
+        response = input("Are you sure you want to overwrite it? (y/n): ")
+        if response.lower() != "y":
+            print("Exiting without overwriting.")
+            write_to_file = False
+        else:
+            print("Overwriting file.")
+            write_to_file = True
+    else:
+        write_to_file = True
+
+    if write_to_file:
+        print(f"Writing {len(commands)} commands file: {filepath}")
+        with open(filepath, "w") as outfile:
+            outfile.write(header_str + "\n")
+            outfile.write('\n'.join(commands))
+        print("Done.")
+    return 
