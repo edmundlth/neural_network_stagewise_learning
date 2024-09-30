@@ -1,15 +1,13 @@
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
 from multitask_sparse_parity import generate_multitask_sparse_parity_dataset
 from sgld_utils import (
     SGLDConfig, 
     run_llc_estimation,
 )
-from utils import to_json_friendly_tree, running_mean
+from utils import to_json_friendly_tree
 import jax
 import jax.numpy as jnp
-from typing import Sequence, Callable, Dict, Tuple, Optional
+from typing import Sequence, Callable, Dict, Tuple
+import ast
 import optax
 import numpy as np
 import haiku as hk
@@ -84,7 +82,7 @@ def config():
 
     model_config = {
         "model_type": "mlp",
-        'hidden_sizes': [1024, 1024],
+        'hidden_sizes': [128, 128],
     }
 
     training_config = {
@@ -108,9 +106,10 @@ def config():
     do_llc_estimation = True
     logging_period = 500
 
-
     seed = 0
     dataset_seed = 0
+    verbose = False
+    log_sgld_loss_trace = False
 
 
 
@@ -127,7 +126,9 @@ def run_experiment(
     do_llc_estimation,
     logging_period,
     seed,
-    dataset_seed
+    dataset_seed,
+    verbose, 
+    log_sgld_loss_trace
 ):
     # Set random seed
     rngkey = jax.random.PRNGKey(seed)
@@ -141,6 +142,9 @@ def run_experiment(
 
 
     hidden_sizes = model_config['hidden_sizes']
+    if isinstance(hidden_sizes, str):
+        hidden_sizes = ast.literal_eval(hidden_sizes) # this is fixing sacred's annoying list parsing issue
+
     batch_size = training_config['batch_size']
     num_steps = training_config['num_steps']
     learning_rate = training_config['learning_rate']
@@ -150,6 +154,11 @@ def run_experiment(
     loss_trace_minibatch = True
     burn_in_prop = 0.9
     itemp = 1.0 / jnp.log(num_training_samples)
+
+    _run.info["expt_properties"] = to_json_friendly_tree({
+        "itemp": itemp,
+        "burn_in_prop": burn_in_prop,
+    })
 
     ########################################################
     # Generate dataset
@@ -180,6 +189,8 @@ def run_experiment(
     train_features, train_labels = features[train_indices], labels[train_indices]
     test_features, test_labels = features[test_indices], labels[test_indices]
 
+    _run.info["expt_properties"]["subtasks"] = subtasks.tolist()
+
     ########################################################
     # Create model
     ########################################################
@@ -188,8 +199,9 @@ def run_experiment(
     model = create_model(hidden_sizes, output_size)
     param_init = model.init(model_key, jnp.zeros((input_size,)))
 
-    num_parameters = sum(np.prod(p.shape) for p in jax.tree_util.tree_flatten(param_init)[0])
+    num_parameters = int(sum(np.prod(p.shape) for p in jax.tree_util.tree_flatten(param_init)[0]))
     print(f"Number of parameters: {num_parameters}")
+    _run.info["expt_properties"]["num_parameters"] = num_parameters
 
 
     ########################################################
@@ -204,7 +216,6 @@ def run_experiment(
         x: jnp.ndarray,
         y: jnp.ndarray
     ) -> jnp.ndarray:
-        # pred = jax.vmap(model.apply, in_axes=(None, None, 0))(params, None, x)
         logits = model.apply(params, None, x)
         return jnp.mean(optax.sigmoid_binary_cross_entropy(logits, y))
 
@@ -227,7 +238,6 @@ def run_experiment(
         y: jnp.ndarray
     ) -> float:
         logits = model.apply(params, None, x)
-        # logits = jax.vmap(model.apply, in_axes=(None, None, 0))(params, None, x)
         preds = jax.nn.sigmoid(logits) > 0.5
         return jnp.mean(preds == y)
 
@@ -238,8 +248,8 @@ def run_experiment(
         labels: jnp.ndarray,
         n_tasks: int
     ) -> Tuple[Dict[int, float], Dict[int, float]]:
-        task_losses = {}
-        task_errors = {}
+        task_losses = []
+        task_errors = []
         
         for task_idx in range(n_tasks):
             task_mask = features[:, task_idx] == 1
@@ -247,8 +257,8 @@ def run_experiment(
             task_labels = labels[task_mask]
             loss = loss_fn(params, task_features, task_labels)
             error = 1 - compute_accuracy(params, task_features, task_labels)
-            task_losses[task_idx] = float(loss)
-            task_errors[task_idx] = float(error)
+            task_losses.append(float(loss))
+            task_errors.append(float(error))
         return task_losses, task_errors
     
     ########################################################
@@ -259,7 +269,7 @@ def run_experiment(
     train_gen = data_generator(train_features, train_labels, batch_size, gen_key)
 
     # Training loop
-    _run.info["records"] = []
+    _run.info["sgd_records"] = []
     param = param_init
     step = 0
 
@@ -290,7 +300,7 @@ def run_experiment(
                 y = jax.nn.softmax(model.apply(param, None, x_train))
 
                 rngkey, subkey = jax.random.split(rngkey)
-                lambdahat_list = run_llc_estimation(
+                lambdahat_list, loss_traces = run_llc_estimation(
                         subkey, 
                         loss_fn, 
                         sgld_config, 
@@ -299,22 +309,24 @@ def run_experiment(
                         y,
                         itemp=itemp, 
                         loss_trace_minibatch=loss_trace_minibatch,
-                        burn_in_prop=burn_in_prop
+                        burn_in_prop=burn_in_prop, 
+                        return_loss_trace=log_sgld_loss_trace
                     )
                 lambdahat = float(np.mean(lambdahat_list))
                 
-                rec.update(to_json_friendly_tree(
+                rec.update(
                     {
                         "llc_est": float(lambdahat),
                         "llc_est_list": lambdahat_list,
-                        # "loss_trace": loss_trace, 
-                    })
+                        "loss_trace": loss_traces, 
+                    }
                 )
-            print(
-                f"Step {step:6d}, Loss: {loss:.7f}, Test Acc: {test_acc:.7f}"
-                + f", llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
-            )
-            _run.info["records"].append(rec)
+            _run.info["sgd_records"].append(to_json_friendly_tree(rec))
+            if verbose:
+                print(
+                    f"Step {step:6d}, Loss: {loss:.7f}, Test Acc: {test_acc:.7f}"
+                    + f", llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
+                )
         step += 1
         if step >= num_steps:
             break
@@ -369,7 +381,7 @@ def run_experiment(
                     y = jax.nn.softmax(model.apply(param_stage, None, x_train))
 
                     rngkey, subkey = jax.random.split(rngkey)
-                    lambdahat_list = run_llc_estimation(
+                    lambdahat_list, loss_traces = run_llc_estimation(
                         subkey, 
                         loss_fn, 
                         sgld_config, 
@@ -378,30 +390,30 @@ def run_experiment(
                         y,
                         itemp=itemp, 
                         loss_trace_minibatch=loss_trace_minibatch,
-                        burn_in_prop=burn_in_prop
+                        burn_in_prop=burn_in_prop, 
+                        return_loss_trace=log_sgld_loss_trace
                     )
                     lambdahat = float(np.mean(lambdahat_list))
                     rec.update(
                         {
                             "llc_est": float(lambdahat),
                             "llc_est_list": lambdahat_list,
-                            # "loss_trace": loss_trace, 
+                            "loss_trace": loss_traces,
                         }
                     )
-                print(
-                    f"Stage {stage}, "
-                    + f"Step {step_stage:6d}, "
-                    + f"Loss: {loss:.8f}, "
-                    + f"Test Acc: {test_acc:.2f}, "
-                    + f"llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
-                )
+                if verbose:
+                    print(
+                        f"Stage {stage}, "
+                        + f"Step {step_stage:6d}, "
+                        + f"Loss: {loss:.8f}, "
+                        + f"Test Acc: {test_acc:.2f}, "
+                        + f"llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
+                    )
             step_stage += 1
             if step_stage >= num_steps:
                 break    
             if step_stage > 0 and stage_rec[-1]["loss"] < early_stopping_epsilon:
                 break
-        _run.info["stage_records"].append(stage_rec)
-
-    
+        _run.info["stage_records"].append(to_json_friendly_tree(stage_rec))
     return 
     

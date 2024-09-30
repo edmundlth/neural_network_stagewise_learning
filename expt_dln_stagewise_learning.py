@@ -724,7 +724,7 @@ def run_experiment(
                         y = y_train
 
                     rngkey, subkey = jax.random.split(rngkey)
-                    lambdahat_list = run_llc_estimation(
+                    lambdahat_list, loss_traces = run_llc_estimation(
                         subkey, 
                         loss_fn, 
                         sgld_config, 
@@ -862,7 +862,7 @@ def run_experiment(
                     y = y_train
 
                 rngkey, subkey = jax.random.split(rngkey)
-                lambdahat_list = run_llc_estimation(
+                lambdahat_list, loss_traces = run_llc_estimation(
                     subkey, 
                     loss_fn, 
                     sgld_config, 

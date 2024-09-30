@@ -12,14 +12,27 @@ DATABASE_URL="localhost:27017:${DATABASE_NAME}"
 # no observer
 # python expt_dln_stagewise_learning.py with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=2 logging_period=300 seed=0 training_config.num_steps=10000 
 
+# with file observer
+# python expt_dln_stagewise_learning.py -F "./outputs/test/" with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=2 logging_period=300 seed=0 training_config.num_steps=10000 
+
+
 #################################
 # Larger test
 #################################
 # at origin
 # python expt_dln_stagewise_learning.py -m ${DATABASE_URL} with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=2 model_config.input_dim=5 model_config.output_dim=5 model_config.hidden_layer_widths=5,5 logging_period=300 seed=0 training_config.num_steps=100000
 
+# python expt_dln_stagewise_learning.py -m ${DATABASE_URL} with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=2 model_config.input_dim=8 model_config.output_dim=8 model_config.hidden_layer_widths=5,5 logging_period=300 seed=0 training_config.num_steps=100000 "data_config.teacher_matrix=('band', 5.0, 15)"
+
+
 # away from origin
 # python expt_dln_stagewise_learning.py -m ${DATABASE_URL} with expt_name="test_run" log_full_checkpoint_param=False model_config.initialisation_exponent=-2 model_config.input_dim=5 model_config.output_dim=5 model_config.hidden_layer_widths=5,5 logging_period=300 seed=0 training_config.num_steps=30000
+
+
+############################################
+# Multitask sparse parity experiments
+############################################
+# time python expt_multitask_sparse_parity.py -F ./outputs/multitask_sparse_parity_expt_output/test/ with verbose=True training_config.num_steps=3000 logging_period=300 max_num_stages=2 log_sgld_loss_trace=True sgld_config.num_chains=2
 
 
 
@@ -67,7 +80,7 @@ for dir in "$FULLDATADIR"/*; do
         # Check if info.json or info.json.gz exists in the directory
         if [ -f "$dir/info.json" ] || [ -f "$dir/info.json.gz" ]; then
             echo "Plotting for ${DATABASEDIR}/${DATASUBDIR}/${SUBDIR}"
-            python plot_utils.py --data_dir "$DATABASEDIR" --data_subdir "${DATASUBDIR}/${SUBDIR}" --output_dir "$OUTPUTDIR"
+            python plot_utils.py --data_dir "$DATABASEDIR" --data_subdir "${DATASUBDIR}/${SUBDIR}" --output_dir "$OUTPUTDIR" 
         else
             echo "Skipping ${DATABASEDIR}/${DATASUBDIR}/${SUBDIR} - no info.json or info.json.gz found"
         fi

@@ -276,9 +276,11 @@ def run_llc_estimation(
         itemp=1.0, 
         loss_trace_minibatch=True,
         burn_in_prop=0.9,
+        return_loss_trace=False
     ):
     num_training_data = x.shape[0]
     lambdahat_list = []
+    loss_traces = []
     for chain_idx, chain_rngkey in enumerate(jax.random.split(rngkey, sgld_config.num_chains)):
         loss_trace = run_sgld_chain(
             chain_rngkey, 
@@ -290,10 +292,12 @@ def run_llc_estimation(
             itemp=itemp, 
             trace_batch_loss=loss_trace_minibatch
         )
+        if return_loss_trace:
+            loss_traces.append(loss_trace.flatten())
     
         trace_start = min(int(burn_in_prop * len(loss_trace)), len(loss_trace) - 1)
         init_loss = loss_fn(param_init, x, y)
         lambdahat = float(np.mean(loss_trace[trace_start:]) - init_loss) * num_training_data * itemp
         lambdahat_list.append(lambdahat)
-    lambdahat = np.mean(lambdahat_list)
-    return lambdahat_list
+    loss_traces = np.array(loss_traces)
+    return lambdahat_list, loss_traces
