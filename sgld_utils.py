@@ -2,6 +2,7 @@ import haiku as hk
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtree
+import numpy as np
 import optax 
 from typing import NamedTuple
 from dln import create_minibatches
@@ -233,3 +234,66 @@ def run_sgld_known_potential(
     return loss_trace, distances, samples
 
 
+
+def run_sgld_chain(
+        rngkey, 
+        loss_fn, 
+        sgld_config, 
+        param_init, 
+        x, 
+        y,
+        itemp=None, 
+        trace_batch_loss=False
+    ):
+    """
+    Run SGLD with a known potential function.
+    :return: Tuple of (loss_trace, distances
+    """
+    rngkey, subkey = jax.random.split(rngkey)
+    loss_trace, distances, acceptance_probs = run_sgld(
+        subkey, 
+        loss_fn, 
+        sgld_config, 
+        param_init, 
+        x, 
+        y,
+        itemp=itemp, 
+        trace_batch_loss=trace_batch_loss, 
+        compute_distance=False, 
+        verbose=False, 
+        compute_mala_acceptance=False, 
+        output_samples=False
+    )
+    return np.array(loss_trace)
+
+def run_llc_estimation(
+        rngkey, 
+        loss_fn, 
+        sgld_config, 
+        param_init, 
+        x, 
+        y,
+        itemp=1.0, 
+        loss_trace_minibatch=True,
+        burn_in_prop=0.9,
+    ):
+    num_training_data = x.shape[0]
+    lambdahat_list = []
+    for chain_idx, chain_rngkey in enumerate(jax.random.split(rngkey, sgld_config.num_chains)):
+        loss_trace = run_sgld_chain(
+            chain_rngkey, 
+            loss_fn, 
+            sgld_config, 
+            param_init, 
+            x, 
+            y,
+            itemp=itemp, 
+            trace_batch_loss=loss_trace_minibatch
+        )
+    
+        trace_start = min(int(burn_in_prop * len(loss_trace)), len(loss_trace) - 1)
+        init_loss = loss_fn(param_init, x, y)
+        lambdahat = float(np.mean(loss_trace[trace_start:]) - init_loss) * num_training_data * itemp
+        lambdahat_list.append(lambdahat)
+    lambdahat = np.mean(lambdahat_list)
+    return lambdahat_list
