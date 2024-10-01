@@ -10,27 +10,31 @@ current_time = datetime.datetime.now()
 datetime_str = current_time.strftime("%Y%m%d%H%M")
 
 NAME="largemlp"
-NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 3
-WIDTH_TYPE = "constant" # "vary", "constant"
-WIDTH_MIN, WIDTH_MAX = 1024, 4096
+NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 1
+WIDTH_TYPE = "single" # "vary", "constant", single
+WIDTH_MIN, WIDTH_MAX = 100, 500
 WIDTH = 8192
+NUM_WIDTH_VARIATION = 20
 assert WIDTH_MIN <= WIDTH_MAX
 if WIDTH_TYPE == "vary":
-    width_str = f"{WIDTH_MIN}-{WIDTH_MAX}"
+    width_str = f"vary-{WIDTH_MIN}-{WIDTH_MAX}"
     width_options = [
         np.random.randint(WIDTH_MIN, WIDTH_MAX+1, size=ell).tolist()
         for ell in range(NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX+1)
     ]
 elif WIDTH_TYPE == "constant":
-    width_str = f"{WIDTH}"
+    width_str = f"const-{WIDTH}"
     width_options = [[WIDTH] * i for i in range(NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX+1)]
+elif WIDTH_TYPE == "single":
+    width_str = f"single-{WIDTH_MIN}-{WIDTH_MAX}-{NUM_WIDTH_VARIATION}"
+    width_options = [[w] for w in np.linspace(WIDTH_MIN, WIDTH_MAX, num=NUM_WIDTH_VARIATION, dtype=int)]
 else:
     raise ValueError(f"Invalid WIDTH_TYPE: {WIDTH_TYPE}")
 width_options = [str(width_list) for width_list in width_options] # to fix sacred list parsing issue
 
 
-NUMTRAININGDATA = 100000
-BATCH_SIZE = 1024
+NUMTRAININGDATA = 1000000
+BATCH_SIZE = 20000
 LEARNING_RATE = 1e-3
 NUMSTEPS = 500000
 OPTIM = "adam" # "sgd", "adam", "momentum"
@@ -60,7 +64,8 @@ FIXED_CONFIGS = {
     "expt_name": EXPT_NAME,
     "do_llc_estimation": DO_LLC_ESTIMATION,
     "burn_in_prop": 0.9,
-    "logging_period": 1000,
+    "logging_period": 2000,
+    "log_space_uniform_logging": True,
     "log_sgld_loss_trace": LOG_SGLD_LOSS_TRACE,
     "verbose": True, 
 
@@ -77,28 +82,28 @@ FIXED_CONFIGS = {
     "training_config.early_stopping_loss_threshold": 1e-8,
 
     "sgld_config.gamma": 1.0,
-    "sgld_config.num_chains": 3,
+    "sgld_config.num_chains": 1,
     "sgld_config.batch_size": None,
 
     "do_taskwise_training": True,
-    "max_num_stages": 10,
+    "max_num_stages": 5,
 }
 
 # Parameters to vary (list of possible values for that parameter)
 VARYING_CONFIGS = {
     "seed": list(range(NUM_SEEDS)),
 
-    "data_config.n_tasks": [30],
-    "data_config.n_taskbits": [50],
+    "data_config.n_tasks": [500],
+    "data_config.n_taskbits": [100],
     "data_config.n_subset_size": [3],
-    "data_config.alpha": [0.0, 0.1, 0.4],
+    "data_config.alpha": [0.4],
 
     "model_config.hidden_layer_widths": width_options,
 
-    "sgld_config.epsilon": [5e-6],
+    "sgld_config.epsilon": [2e-6],
     "sgld_config.num_steps": [1000],
 
-    "taskwise_training_num_steps": [50000]
+    "taskwise_training_num_steps": [100000]
 }
 
 # Generate commands

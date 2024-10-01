@@ -3,7 +3,7 @@ from sgld_utils import (
     SGLDConfig, 
     run_llc_estimation,
 )
-from utils import to_json_friendly_tree
+from utils import to_json_friendly_tree, compute_param_tree_layer_norms
 import jax
 import jax.numpy as jnp
 from typing import Sequence, Callable, Dict, Tuple
@@ -11,6 +11,8 @@ import ast
 import optax
 import numpy as np
 import haiku as hk
+import pickle
+import json
 
 
 from sacred import Experiment
@@ -67,6 +69,16 @@ def create_model(
     
     return hk.transform(_model_fn)
 
+def make_checkpoint_timestamps(num_steps, logging_period, log_space_uniform_logging):
+    num_checkpoints = num_steps // logging_period + 1
+    if log_space_uniform_logging:
+        checkpoint_timestamps = np.logspace(0, np.log10(num_steps), num=num_checkpoints, base=10).astype(int).tolist()
+    else:
+        checkpoint_timestamps = np.linspace(1, num_steps, num=num_checkpoints, endpoint=True).astype(int).tolist()
+    if checkpoint_timestamps[-1] != num_steps:
+        checkpoint_timestamps.append(num_steps)
+    return checkpoint_timestamps
+
 
 @ex.config  
 def config():
@@ -109,6 +121,7 @@ def config():
     taskwise_training_num_steps = None
 
     logging_period = 500
+    log_space_uniform_logging = False
 
     seed = 0
     dataset_seed = None
@@ -131,6 +144,7 @@ def run_experiment(
     do_taskwise_training,
     taskwise_training_num_steps,
     logging_period,
+    log_space_uniform_logging,
     seed,
     dataset_seed,
     verbose, 
@@ -214,6 +228,14 @@ def run_experiment(
     num_parameters = int(sum(np.prod(p.shape) for p in jax.tree_util.tree_flatten(param_init)[0]))
     print(f"Number of parameters: {num_parameters}")
     _run.info["expt_properties"]["num_parameters"] = num_parameters
+    treedef = jax.tree_util.tree_flatten(param_init)[1]
+    pickled_treedef = pickle.dumps(treedef)
+    _run.info["expt_properties"]["param_treedef_pickled"] = pickled_treedef
+
+    param_tree_shapes = jax.tree_util.tree_map(lambda x: list(x.shape), param_init)
+    print("Parameter shapes:")
+    print(json.dumps(param_tree_shapes, indent=2))
+    _run.info["expt_properties"]["param_tree_shapes"] = to_json_friendly_tree(param_tree_shapes)
 
 
     ########################################################
@@ -289,21 +311,26 @@ def run_experiment(
     train_gen = data_generator(train_features, train_labels, batch_size, gen_key)
 
     # Training loop
+    checkpoint_timestamps = make_checkpoint_timestamps(num_steps, logging_period, log_space_uniform_logging)
+    print(f"Checkpoint timestamps: {checkpoint_timestamps}")
+
     _run.info["sgd_records"] = []
     param = param_init
-    step = 0
-
-    while step < num_steps:
+    step = 1
+    while step <= num_steps:
         x_batch, y_batch = next(train_gen)
         loss, param, opt_state = make_step(param, x_batch, y_batch, opt_state)
         
-        if step % logging_period == 0:
+        if step in checkpoint_timestamps:
             test_acc = compute_accuracy(param, test_features, test_labels)
             test_loss = loss_fn(param, test_features, test_labels)
             batch_acc = compute_accuracy(param, x_batch, y_batch)
-            
-            # Compute task-wise test losses
             task_losses, task_errors = compute_task_losses(param, test_features, test_labels, n_tasks)
+            num_learnt_tasks = np.sum(np.array(task_errors) < 0.25)
+
+            layer_norms = compute_param_tree_layer_norms(param)
+            layer_norms = jax.tree_util.tree_map(lambda x: float(x), layer_norms)
+
             rec = {
                 "step": step,
                 "loss": float(loss),
@@ -311,10 +338,11 @@ def run_experiment(
                 "test_acc": float(test_acc),
                 "batch_acc": float(batch_acc),
                 "task_losses": task_losses,
-                "task_errors": task_errors
+                "task_errors": task_errors, 
+                "layer_norms": layer_norms,
+                "num_learnt_tasks": num_learnt_tasks,
             }
 
-            # do_llc_estimation
             if do_llc_estimation:
                 x_train = train_features
                 y = jax.nn.softmax(model.apply(param, None, x_train))
@@ -338,9 +366,10 @@ def run_experiment(
                     {
                         "llc_est": float(lambdahat),
                         "llc_est_list": lambdahat_list,
-                        "loss_trace": loss_traces, 
                     }
                 )
+                if log_sgld_loss_trace:
+                    rec["loss_trace"] = loss_traces
             _run.info["sgd_records"].append(to_json_friendly_tree(rec))
             if verbose:
                 print(
@@ -348,7 +377,7 @@ def run_experiment(
                     + f", llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
                 )
         step += 1
-        if step >= num_steps:
+        if step > num_steps:
             break
 
 
@@ -357,16 +386,20 @@ def run_experiment(
     ########################################################
 
     if do_taskwise_training:
+        final_num_learnt_tasks = _run.info["sgd_records"][-1]["num_learnt_tasks"]
+        max_task_id = min(final_num_learnt_tasks * 1.2, n_tasks -1)
+        stage_max_task_ids = np.linspace(1, max_task_id, num=max_num_stages).astype(int)
+        print(f"Stage max task ids: {stage_max_task_ids}")
         _run.info["stage_records"] = []
-        for stage in range(1, max_num_stages):
-            task_ids = np.arange(stage).astype(int)
+        for stage, last_task_id in enumerate(stage_max_task_ids):
+            task_ids = np.arange(last_task_id).astype(int)
             stage_mask = (train_features[:, task_ids[0]] == 1)
             
             for task_id in task_ids[1:]:
                 stage_mask = stage_mask | (train_features[:, task_id] == 1)
             stage_features = train_features[stage_mask]
             stage_labels = train_labels[stage_mask]
-            print(stage_features.shape, stage_labels.shape)
+            print(f"Stage {stage}: {len(stage_features)} samples, {last_task_id + 1} tasks")
 
             # reinitialize parameter for each stage
             param_stage = param_init
@@ -379,12 +412,13 @@ def run_experiment(
 
             # Training loop
             stage_rec = []
-            step_stage = 0
-            while step_stage < taskwise_training_num_steps:
+            step_stage = 1
+            checkpoint_timestamps = make_checkpoint_timestamps(taskwise_training_num_steps, logging_period, log_space_uniform_logging)
+            while step_stage <= taskwise_training_num_steps:
                 x_batch, y_batch = next(train_gen_stage)
                 loss, param_stage, opt_state_stage = make_step(param_stage, x_batch, y_batch, opt_state_stage)
 
-                if step_stage % logging_period == 0:
+                if step_stage in checkpoint_timestamps:
                     test_acc = compute_accuracy(param_stage, test_features, test_labels)
                     test_loss = loss_fn(param_stage, test_features, test_labels)
                     batch_acc = compute_accuracy(param_stage, x_batch, y_batch)
@@ -394,6 +428,7 @@ def run_experiment(
                         "test_loss": float(test_loss),
                         "test_acc": float(test_acc),
                         "batch_acc": float(batch_acc),
+                        "n_tasks": last_task_id + 1,
                     }
                     
                     stage_rec.append(rec)
@@ -419,9 +454,10 @@ def run_experiment(
                             {
                                 "llc_est": float(lambdahat),
                                 "llc_est_list": lambdahat_list,
-                                "loss_trace": loss_traces,
                             }
                         )
+                        if log_sgld_loss_trace:
+                            rec["loss_trace"] = loss_traces
                     if verbose:
                         print(
                             f"Stage {stage}, "
@@ -431,7 +467,7 @@ def run_experiment(
                             + f"llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
                         )
                 step_stage += 1
-                if step_stage >= taskwise_training_num_steps:
+                if step_stage > taskwise_training_num_steps:
                     break    
                 if step_stage > 0 and stage_rec[-1]["loss"] < early_stopping_epsilon:
                     break

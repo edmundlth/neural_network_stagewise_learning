@@ -110,6 +110,11 @@ def get_singular_values(matrix):
     # S contains the singular values
     return S
 
+@jax.jit
+def compute_param_tree_layer_norms(param_tree):
+    return jtree.tree_map(lambda x: jnp.linalg.norm(x), param_tree)
+    
+
 def param_lp_dist(param1, param2, ord=2):
     return sum([ # TODO: BUG!: This is sum of norms, but not the true norm!
         jnp.linalg.norm(x.flatten() - y.flatten(), ord=ord) 

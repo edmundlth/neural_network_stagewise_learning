@@ -238,7 +238,7 @@ def gradient_flow(
     # Run the optimization loop
     for t in range(num_steps):
         params, opt_state, loss = step(params, opt_state)
-        if t % logging_period == 0:
+        if (t % logging_period == 0):
             rec = {
                 "t": t,
                 "loss": float(loss),
@@ -682,7 +682,7 @@ def run_experiment(
             trained_param = optax.apply_updates(trained_param, updates)
             
             # logging checkpoint
-            if t % logging_period == 0:
+            if (t % logging_period == 0) or (t == max_steps - 1):
                 # log total matrix
                 total_matrix = get_dln_total_product_matrix(trained_param)
                 corrected_total_matrix = U.T @ total_matrix.T @ Vhat
