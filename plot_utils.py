@@ -27,6 +27,15 @@ COLUMN_TRANSFORM = {
     "total_matrix": _to_array,
     "potential_matrix": _to_array,
 }
+
+CHOSEN_CMAP = "viridis"
+def _set_color_cycle(num_colors, cmap_name=CHOSEN_CMAP):
+    colors = [plt.get_cmap(cmap_name)(i / (num_colors - 1)) for i in range(num_colors)]
+    plt.rcParams['axes.prop_cycle'] = plt.cycler(color=colors)
+    return colors
+
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate plots from experiment data.")
     parser.add_argument("--data_dir", required=True, help="Base directory containing the experiment data")
@@ -53,15 +62,19 @@ def extract_directory(dir_path: str) -> tuple:
     
     config_filename = "config.json" if "config.json" in filelist else "config.json.gz"
     info_filename = "info.json" if "info.json" in filelist else "info.json.gz"
+    run_filename = "run.json" if "run.json" in filelist else "run.json.gz"
     
     expt_config = _read_json_file(os.path.join(dir_path, config_filename))
     expt_info = _read_json_file(os.path.join(dir_path, info_filename))
+    expt_run = _read_json_file(os.path.join(dir_path, run_filename))
+    if not expt_run["status"] == "COMPLETED":
+        print(f"Experiment did not complete successfully. Status: {expt_run['status']}")
+        # raise RuntimeError(f"Experiment did not complete successfully. Status: {expt_run['status']}")
     expt_properties = expt_info["expt_properties"]
 
     df_sgd = parse_sgd_logs(expt_info["sgd_logs"])
     df_gd = parse_gd_logs(expt_info["gd_logs"])
     stagewise_dfs = parse_stagewise_gd_logs(expt_info["stagewise_gd_logs"])
-    
     return expt_config, expt_info, expt_properties, df_sgd, df_gd, stagewise_dfs
 
 def parse_sgd_logs(logs):
@@ -115,22 +128,39 @@ def parse_gd_logs(logs):
 
 
 
+
 def parse_individual_stagewise_gd_logs(logs):
     eval_names = logs["eval_lists"]
+    eval_names = [name for name in eval_names if not name.startswith("stage_llc")]
     num_stages = logs["num_stages"]
+    
     if num_stages != len(logs["stage_logs"]):
         print("Warning: num_stages does not match the number of stage logs.")
     other_cols = None
     data = []
     accumuated_time = 0
+    other_info = {}
+    for stage in range(num_stages):
+        llc_key = f"stage_llc_{stage}"
+        other_info[stage] = {}
+        if llc_key in logs:
+            other_info[stage]["llc"] = logs[llc_key]
+        llc_potential_key = f"stage_llc_known_potential_{stage}"
+        if llc_potential_key in logs:
+            other_info[stage]["llc_potential"] = logs[llc_potential_key]
+        
+
     for stage, stage_logs in enumerate(logs["stage_logs"]):
         for checkpoint in stage_logs:
             keys = sorted(checkpoint.keys())
             keys.remove("evals")
+            if "total_matrix" in keys:
+                keys.remove("total_matrix")
+        
             if other_cols is None:
                 other_cols = keys
             else:
-                assert keys == other_cols
+                assert keys == other_cols, f"Keys: {keys}, other_cols: {other_cols}"
             checkpoint_data = (
                 [checkpoint[key] for key in keys] 
                 + checkpoint["evals"] 
@@ -144,14 +174,19 @@ def parse_individual_stagewise_gd_logs(logs):
     for k, v in COLUMN_TRANSFORM.items():
         if k in df.columns:
             df[k] = df[k].apply(v)
-    return df
+    return df, other_info
 
 def parse_stagewise_gd_logs(logs):
     print("Parsing Stagewise GD logs...")
     results = {}
     for potential_type, potential_logs in logs.items():
         print(f"Parsing GD logs for stagewise potential type: {potential_type}")
-        results[potential_type] = parse_individual_stagewise_gd_logs(potential_logs)
+        df, other_info = parse_individual_stagewise_gd_logs(potential_logs)
+        results[potential_type] = {
+            "df": df,
+            "other_info": other_info,
+        }
+        
     return results
 
 
@@ -214,10 +249,13 @@ def generate_plots(args):
     savefig_fn = create_savefig_fn(output_dir, data_subdir, overwrite, dry_run, suptitle=suptitle)
     
     # Generate plots
-    generate_sgd_plots(df_sgd, expt_config, expt_properties, savefig_fn)
-    generate_gd_plots(df_gd, expt_properties, savefig_fn)
-    generate_stagewise_plots(stagewise_dfs, savefig_fn)
-
+    try: 
+        generate_sgd_plots(df_sgd[df_sgd["t"] > 100].copy(), expt_config, expt_properties, savefig_fn, stagewise_dfs)
+        generate_gd_plots(df_gd, expt_properties, savefig_fn)
+        generate_stagewise_plots(stagewise_dfs, savefig_fn)
+    except Exception as e:
+        print(f"Error generating plots: {e}")
+    
     config_filepath = _generate_filepath(output_dir, data_subdir, "config.json")
     properties_filepath = _generate_filepath(output_dir, data_subdir, "properties.json")
     with open(config_filepath, "w") as f:
@@ -229,13 +267,13 @@ def generate_plots(args):
     return 
 
 
-def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dict[str, Any], savefig_fn: Callable):
+def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dict[str, Any], savefig_fn: Callable, stagewise_dfs=None):
     do_llc_estimation = config["do_llc_estimation"]
     input_dim = config["model_config"]["input_dim"]
     output_dim = config["model_config"]["output_dim"]
-    teacher_matrix = np.array(properties["teacher_matrix"])
-    input_correlation_matrix = np.array(properties["input_correlation_matrix"])
-    input_output_correlation_matrix = np.array(properties["input_output_cross_correlation_matrix"])
+    # teacher_matrix = np.array(properties["teacher_matrix"])
+    # input_correlation_matrix = np.array(properties["input_correlation_matrix"])
+    # input_output_correlation_matrix = np.array(properties["input_output_cross_correlation_matrix"])
     U, S, V, Vhat, ChangeOfBasis = [
         np.array(properties["svd_matrices"][key]) for key in [
             "U", "S", "V", "Vhat", "ChangeOfBasis"
@@ -245,7 +283,7 @@ def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dic
         df["corrected_total_matrix_diagonals"] = df["corrected_total_matrix"].apply(lambda x: np.diag(x))
 
     # Plot 1: Training Loss and LLC Estimation
-    fig, axes = plt.subplots(4, 1, figsize=(10, 18), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 18), sharex=True)
     ax = axes[0]
     ax.plot(df["t"], df["train_loss"], label="Training Loss")
     ax.set_ylabel("Training Loss")
@@ -258,13 +296,19 @@ def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dic
         ax.plot(df["t"], clipped_llc, "kx", alpha=0.3, label="Estimated LLC, $\hat{\lambda}(w^*)$")
         yvals = running_mean(clipped_llc)
         ax.plot(df["t"], yvals, "g-")
-        stage_llcs = np.array(df["stage_potential_llcs"].tolist())
-        stage_llcs = np.clip(stage_llcs, a_min=0, a_max=100)
-        for i in range(stage_llcs.shape[1]):
-            yvals = running_mean(stage_llcs[:, i])
-            ax.plot(df["t"], yvals, label=f"Stage {i + 1}", alpha=0.5)
         ax.set_ylabel("Estimated LLC, $\hat{\lambda}(w^*)$")
         ax.legend(loc="upper right")
+        
+        if stagewise_dfs is not None:
+            CHOSEN_POTENTIAL_TYPE = "block" # "block", "row_col", "diag"
+            llc_rec_block = stagewise_dfs[CHOSEN_POTENTIAL_TYPE]["other_info"]
+            df_llc = pd.DataFrame.from_dict(llc_rec_block, orient="index").sort_index()
+            xmin, xmax = ax.get_xlim()
+            for stage in range(df_llc.shape[0]):
+                llc = df_llc.loc[stage, "llc"]
+                ax.hlines(llc, xmin, xmax, color="g", linestyle="--", alpha=0.5)
+                ax.text(xmax, llc, f"Stage {stage}", color="g", fontsize=10, va="center")
+
 
     # Plot 2: Corrected Total Matrix Diagonals
     ax = axes[1]
@@ -281,26 +325,26 @@ def generate_sgd_plots(df: pd.DataFrame, config: Dict[str, Any], properties: Dic
     ax.hlines(singvals_true, xmin, xmax, color="k", linestyle="--", alpha=0.5)
     ax.set_ylabel("$i^{th}$ Diagonal of $U^T W_T V$")
 
-    # Plot 3: Diagonal h_{i=j}(w_t)^2
-    ax = axes[2]
-    for i in range(input_output_correlation_matrix.shape[0]):
-        yvals = df["potential_matrix"].apply(lambda x: np.array(x)[i, i]**2)
-        ax.plot(df["t"], yvals, label=f"({i}, {i})")
-    ax.set_ylabel("$h_{i=j}(w_t)^2$")
-    ax.set_title("Diagonal $h_{i=j}(w_t)^2$")
-    ax.legend()
-    ax.set_yscale("log")
+    # # Plot 3: Diagonal h_{i=j}(w_t)^2
+    # ax = axes[2]
+    # for i in range(input_output_correlation_matrix.shape[0]):
+    #     yvals = df["potential_matrix"].apply(lambda x: np.array(x)[i, i]**2)
+    #     ax.plot(df["t"], yvals, label=f"({i}, {i})")
+    # ax.set_ylabel("$h_{i=j}(w_t)^2$")
+    # ax.set_title("Diagonal $h_{i=j}(w_t)^2$")
+    # ax.legend()
+    # ax.set_yscale("log")
 
-    # Plot 4: Off diagonal h_{i≠j}(w_t)^2
-    ax = axes[3]
-    for i in range(input_output_correlation_matrix.shape[0]):
-        for j in range(input_output_correlation_matrix.shape[1]):
-            if i == j: continue
-            yvals = df["potential_matrix"].apply(lambda x: np.array(x)[i, j]**2)
-            ax.plot(df["t"], yvals, label=f"({i}, {j})")
-    ax.set_ylabel("$h_{i \\neq j}(w_t)^2$")
-    ax.set_title("Off diagonal $h_{i \\neq j}(w_t)^2$")
-    ax.set_yscale("log")
+    # # Plot 4: Off diagonal h_{i≠j}(w_t)^2
+    # ax = axes[3]
+    # for i in range(input_output_correlation_matrix.shape[0]):
+    #     for j in range(input_output_correlation_matrix.shape[1]):
+    #         if i == j: continue
+    #         yvals = df["potential_matrix"].apply(lambda x: np.array(x)[i, j]**2)
+    #         ax.plot(df["t"], yvals, label=f"({i}, {j})")
+    # ax.set_ylabel("$h_{i \\neq j}(w_t)^2$")
+    # ax.set_title("Off diagonal $h_{i \\neq j}(w_t)^2$")
+    # ax.set_yscale("log")
 
     for i, ax in enumerate(axes): 
         if i == len(axes) - 1:
@@ -363,10 +407,13 @@ def generate_gd_plots(df: pd.DataFrame, properties: Dict[str, Any], savefig_fn: 
 
 def generate_stagewise_plots(stagewise_dfs: Dict[str, pd.DataFrame], savefig_fn: Callable):
     ymin_bound = 1e-4
-    for potential_type, df in stagewise_dfs.items():
+    for potential_type, rec in stagewise_dfs.items():
+        df = rec["df"]
+        other_info = rec["other_info"]
         fig, ax = plt.subplots(1, 1, figsize=(8, 4))
 
         cols = ["total_potential"] + [col for col in df.columns if col.startswith("stage_potential")]
+        _set_color_cycle(len(cols) + 1)
         for col in cols:
             yvals = np.clip(df[col], a_min=ymin_bound, a_max=np.inf)
             ax.plot(df["total_time"], yvals, label=col)

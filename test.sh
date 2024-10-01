@@ -32,8 +32,7 @@ DATABASE_URL="localhost:27017:${DATABASE_NAME}"
 ############################################
 # Multitask sparse parity experiments
 ############################################
-# time python expt_multitask_sparse_parity.py -F ./outputs/multitask_sparse_parity_expt_output/test/ with verbose=True training_config.num_steps=3000 logging_period=300 max_num_stages=2 log_sgld_loss_trace=True sgld_config.num_chains=2
-
+# time python expt_multitask_sparse_parity.py -F ./outputs/multitask_sparse_parity_expt_output/test/ with verbose=True training_config.num_steps=3000 logging_period=300 max_num_stages=2 log_sgld_loss_trace=True sgld_config.num_chains=2 "model_config.hidden_sizes='[128,128,128]'"
 
 
 ###########################################
