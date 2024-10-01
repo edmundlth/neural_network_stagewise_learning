@@ -408,7 +408,12 @@ def run_experiment(
 
             # Create data generator
             rngkey, gen_key = jax.random.split(rngkey)
-            train_gen_stage = data_generator(stage_features, stage_labels, batch_size, gen_key)
+            train_gen_stage = data_generator(
+                stage_features, 
+                stage_labels, 
+                min(batch_size, len(stage_features)), 
+                gen_key
+            )
 
             # Training loop
             stage_rec = []
