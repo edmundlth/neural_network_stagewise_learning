@@ -82,7 +82,7 @@ def config():
 
     model_config = {
         "model_type": "mlp",
-        'hidden_sizes': [128, 128],
+        'hidden_layer_widths': [128, 128],
     }
 
     training_config = {
@@ -147,9 +147,9 @@ def run_experiment(
     alpha = data_config['alpha']
 
 
-    hidden_sizes = model_config['hidden_sizes']
-    if isinstance(hidden_sizes, str):
-        hidden_sizes = ast.literal_eval(hidden_sizes) # this is fixing sacred's annoying list parsing issue
+    hidden_layer_widths = model_config['hidden_layer_widths']
+    if isinstance(hidden_layer_widths, str):
+        hidden_layer_widths = ast.literal_eval(hidden_layer_widths) # this is fixing sacred's annoying list parsing issue
 
     batch_size = training_config['batch_size']
     num_steps = training_config['num_steps']
@@ -208,7 +208,7 @@ def run_experiment(
     ########################################################
     input_size = n_tasks + n_taskbits
     output_size = 2
-    model = create_model(hidden_sizes, output_size)
+    model = create_model(hidden_layer_widths, output_size)
     param_init = model.init(model_key, jnp.zeros((input_size,)))
 
     num_parameters = int(sum(np.prod(p.shape) for p in jax.tree_util.tree_flatten(param_init)[0]))
