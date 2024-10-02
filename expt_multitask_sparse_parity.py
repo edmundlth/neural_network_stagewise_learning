@@ -326,7 +326,7 @@ def run_experiment(
             test_loss = loss_fn(param, test_features, test_labels)
             batch_acc = compute_accuracy(param, x_batch, y_batch)
             task_losses, task_errors = compute_task_losses(param, test_features, test_labels, n_tasks)
-            num_learnt_tasks = np.sum(np.array(task_errors) < 0.25)
+            num_learnt_tasks = np.sum(np.array(task_errors) < 0.1)
 
             layer_norms = compute_param_tree_layer_norms(param)
             layer_norms = jax.tree_util.tree_map(lambda x: float(x), layer_norms)
