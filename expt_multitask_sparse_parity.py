@@ -388,7 +388,7 @@ def run_experiment(
     if do_taskwise_training:
         final_num_learnt_tasks = _run.info["sgd_records"][-1]["num_learnt_tasks"]
         max_task_id = min(final_num_learnt_tasks * 1.2, n_tasks -1)
-        stage_max_task_ids = np.linspace(1, max_task_id, num=max_num_stages).astype(int)
+        stage_max_task_ids = np.unique(np.linspace(1, max_task_id, num=max_num_stages).astype(int))
         print(f"Stage max task ids: {stage_max_task_ids}")
         _run.info["stage_records"] = []
         for stage, last_task_id in enumerate(stage_max_task_ids):
@@ -427,6 +427,7 @@ def run_experiment(
                     test_acc = compute_accuracy(param_stage, test_features, test_labels)
                     test_loss = loss_fn(param_stage, test_features, test_labels)
                     batch_acc = compute_accuracy(param_stage, x_batch, y_batch)
+                    layer_norms = compute_param_tree_layer_norms(param_stage)
                     rec = {
                         "step": step_stage,
                         "loss": float(loss),
@@ -434,9 +435,9 @@ def run_experiment(
                         "test_acc": float(test_acc),
                         "batch_acc": float(batch_acc),
                         "n_tasks": last_task_id + 1,
+                        "layer_norms": layer_norms,
                     }
                     
-                    stage_rec.append(rec)
                     if do_llc_estimation:
                         x_train = stage_features
                         y = jax.nn.softmax(model.apply(param_stage, None, x_train))
@@ -463,6 +464,8 @@ def run_experiment(
                         )
                         if log_sgld_loss_trace:
                             rec["loss_trace"] = loss_traces
+                    
+                    stage_rec.append(to_json_friendly_tree(rec))
                     if verbose:
                         print(
                             f"Stage {stage}, "

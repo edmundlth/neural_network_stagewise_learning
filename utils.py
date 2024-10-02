@@ -6,6 +6,11 @@ from scipy.special import logsumexp
 from scipy.stats import linregress
 import itertools
 import os
+import re
+
+
+def strip_ends_non_alphanumeric(string):
+    return re.sub(r'^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$', '', string)
 
 
 def running_mean(data, window_size=10):

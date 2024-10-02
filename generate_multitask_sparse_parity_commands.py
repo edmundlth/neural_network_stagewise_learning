@@ -12,9 +12,9 @@ datetime_str = current_time.strftime("%Y%m%d%H%M")
 NAME="largemlp"
 NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 1
 WIDTH_TYPE = "single" # "vary", "constant", single
-WIDTH_MIN, WIDTH_MAX = 100, 500
+WIDTH_MIN, WIDTH_MAX = 100, 2000
 WIDTH = 8192
-NUM_WIDTH_VARIATION = 20
+NUM_WIDTH_VARIATION = 10
 assert WIDTH_MIN <= WIDTH_MAX
 if WIDTH_TYPE == "vary":
     width_str = f"vary-{WIDTH_MIN}-{WIDTH_MAX}"
@@ -33,10 +33,10 @@ else:
 width_options = [str(width_list) for width_list in width_options] # to fix sacred list parsing issue
 
 
-NUMTRAININGDATA = 1000000
+NUMTRAININGDATA = 2000000
 BATCH_SIZE = 20000
 LEARNING_RATE = 1e-3
-NUMSTEPS = 500000
+NUMSTEPS = 2000000
 OPTIM = "adam" # "sgd", "adam", "momentum"
 
 DO_LLC_ESTIMATION = True
@@ -64,7 +64,7 @@ FIXED_CONFIGS = {
     "expt_name": EXPT_NAME,
     "do_llc_estimation": DO_LLC_ESTIMATION,
     "burn_in_prop": 0.9,
-    "logging_period": 2000,
+    "logging_period": 5000,
     "log_space_uniform_logging": True,
     "log_sgld_loss_trace": LOG_SGLD_LOSS_TRACE,
     "verbose": True, 
@@ -79,14 +79,14 @@ FIXED_CONFIGS = {
     "training_config.num_steps": NUMSTEPS,
     "training_config.optim": OPTIM,
     "training_config.momentum": .9,
-    "training_config.early_stopping_loss_threshold": 1e-8,
+    "training_config.early_stopping_loss_threshold": 1e-10,
 
     "sgld_config.gamma": 1.0,
     "sgld_config.num_chains": 1,
     "sgld_config.batch_size": None,
 
     "do_taskwise_training": True,
-    "max_num_stages": 5,
+    "max_num_stages": 20,
 }
 
 # Parameters to vary (list of possible values for that parameter)
@@ -101,9 +101,9 @@ VARYING_CONFIGS = {
     "model_config.hidden_layer_widths": width_options,
 
     "sgld_config.epsilon": [2e-6],
-    "sgld_config.num_steps": [1000],
+    "sgld_config.num_steps": [2500],
 
-    "taskwise_training_num_steps": [100000]
+    "taskwise_training_num_steps": [200000]
 }
 
 # Generate commands
