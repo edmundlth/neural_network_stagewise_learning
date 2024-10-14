@@ -9,12 +9,12 @@ from utils import write_commands_to_file, generate_sacred_commands
 current_time = datetime.datetime.now()
 datetime_str = current_time.strftime("%Y%m%d%H%M")
 
-NAME="largemlp"
+NAME="largelong"
 NUM_HIDDEN_LAYERS_MIN, NUM_HIDDEN_LAYERS_MAX = 1, 1
 WIDTH_TYPE = "single" # "vary", "constant", single
-WIDTH_MIN, WIDTH_MAX = 100, 2000
-WIDTH = 8192
-NUM_WIDTH_VARIATION = 10
+WIDTH_MIN, WIDTH_MAX = 500, 3000
+WIDTH = 1000
+NUM_WIDTH_VARIATION = 5
 assert WIDTH_MIN <= WIDTH_MAX
 if WIDTH_TYPE == "vary":
     width_str = f"vary-{WIDTH_MIN}-{WIDTH_MAX}"
@@ -33,10 +33,10 @@ else:
 width_options = [str(width_list) for width_list in width_options] # to fix sacred list parsing issue
 
 
-NUMTRAININGDATA = 2000000
+NUMTRAININGDATA = 1000000
 BATCH_SIZE = 20000
 LEARNING_RATE = 1e-3
-NUMSTEPS = 2000000
+NUMSTEPS = 15000000
 OPTIM = "adam" # "sgd", "adam", "momentum"
 
 DO_LLC_ESTIMATION = True
@@ -64,7 +64,7 @@ FIXED_CONFIGS = {
     "expt_name": EXPT_NAME,
     "do_llc_estimation": DO_LLC_ESTIMATION,
     "burn_in_prop": 0.9,
-    "logging_period": 5000,
+    "logging_period": 50000,
     "log_space_uniform_logging": True,
     "log_sgld_loss_trace": LOG_SGLD_LOSS_TRACE,
     "verbose": True, 

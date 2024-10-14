@@ -283,6 +283,10 @@ def run_experiment(
         preds = jax.nn.sigmoid(logits) > 0.5
         return jnp.mean(preds == y)
 
+    @jax.jit
+    def compute_logit_norm(params: hk.Params, x: jnp.ndarray) -> float:
+        logits = model.apply(params, None, x)
+        return jnp.linalg.norm(logits, axis=1).mean()
 
     def compute_task_losses(
         params: hk.Params,
@@ -330,6 +334,7 @@ def run_experiment(
 
             layer_norms = compute_param_tree_layer_norms(param)
             layer_norms = jax.tree_util.tree_map(lambda x: float(x), layer_norms)
+            logit_norm = compute_logit_norm(param, test_features)
 
             rec = {
                 "step": step,
@@ -340,6 +345,7 @@ def run_experiment(
                 "task_losses": task_losses,
                 "task_errors": task_errors, 
                 "layer_norms": layer_norms,
+                "logit_norm": float(logit_norm),
                 "num_learnt_tasks": num_learnt_tasks,
             }
 
@@ -374,7 +380,9 @@ def run_experiment(
             if verbose:
                 print(
                     f"Step {step:6d}, Loss: {loss:.7f}, Test Acc: {test_acc:.7f}"
-                    + f", llc_est: {lambdahat:.2f}" if do_llc_estimation else ""
+                    + (f", llc_est: {lambdahat:.2f}" if do_llc_estimation else "")
+                    + f", tasks: {num_learnt_tasks}"
+                    + f", Logit norm: {logit_norm:.2f}"
                 )
         step += 1
         if step > num_steps:
@@ -428,6 +436,7 @@ def run_experiment(
                     test_loss = loss_fn(param_stage, test_features, test_labels)
                     batch_acc = compute_accuracy(param_stage, x_batch, y_batch)
                     layer_norms = compute_param_tree_layer_norms(param_stage)
+                    logit_norm = compute_logit_norm(param_stage, test_features)
                     rec = {
                         "step": step_stage,
                         "loss": float(loss),
@@ -436,6 +445,7 @@ def run_experiment(
                         "batch_acc": float(batch_acc),
                         "n_tasks": last_task_id + 1,
                         "layer_norms": layer_norms,
+                        "logit_norm": float(logit_norm),
                     }
                     
                     if do_llc_estimation:
