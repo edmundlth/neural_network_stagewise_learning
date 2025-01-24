@@ -1,3 +1,9 @@
+generated_commands_dir/*
+spartan_outputs/*
+outputs/*
+images/*
+*scratch*
+*.DS_Store*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
