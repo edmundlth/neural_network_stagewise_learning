@@ -131,16 +131,27 @@ def run_sgld(
     return loss_trace, distances, accept_probs
 
 
-def generate_rngkey_tree(key_or_seed, tree_or_treedef):
-    rngseq = hk.PRNGSequence(key_or_seed)
-    return jtree.tree_map(lambda _: next(rngseq), tree_or_treedef)
+# def generate_rngkey_tree(key_or_seed, tree_or_treedef):
+#     rngseq = hk.PRNGSequence(key_or_seed)
+#     return jtree.tree_map(lambda _: next(rngseq), tree_or_treedef)
+
+
+def generate_rngkey_tree(key, tree):
+    num_leaves = len(jtree.tree_leaves(tree))
+    keys = jax.random.split(key, num_leaves)
+    treedef = jtree.tree_structure(tree)
+    return jtree.tree_unflatten(treedef, keys)
+
 
 def optim_sgld(epsilon, rngkey_or_seed):
+    sqrt_epsilon = jnp.sqrt(epsilon)
+    neg_half_epsilon = -epsilon / 2
+
     @jax.jit
     def sgld_delta(g, rngkey):
-        eta = jax.random.normal(rngkey, shape=g.shape) * jnp.sqrt(epsilon)
-        return -epsilon * g / 2 + eta
-
+        eta = jax.random.normal(rngkey, shape=g.shape) * sqrt_epsilon
+        return neg_half_epsilon * g + eta
+    
     def init_fn(_):
         return rngkey_or_seed
 
